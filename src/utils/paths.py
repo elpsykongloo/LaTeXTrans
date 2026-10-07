@@ -4,6 +4,18 @@ import stat
 from pathlib import Path
 
 
+def is_project_link(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        info = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    # st_reparse_tag is available on Windows since Python 3.8;
+    # Path.is_junction() only appeared in Python 3.12.
+    return getattr(info, "st_reparse_tag", None) == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
 def project_path(root, candidate, *, writing=False) -> Path:
     """Reject paths outside a project and paths traversing links or junctions."""
     root_path = Path(os.path.abspath(root))
@@ -17,7 +29,7 @@ def project_path(root, candidate, *, writing=False) -> Path:
     for part in ("", *relative.parts):
         if part:
             cursor /= part
-        if cursor.is_symlink() or getattr(cursor, "is_junction", lambda: False)():
+        if is_project_link(cursor):
             raise ValueError(f"Project path traverses a link: {cursor}")
     if writing and path.is_file() and path.stat().st_nlink > 1:
         raise ValueError(f"Refusing to overwrite a hard-linked file: {path}")
