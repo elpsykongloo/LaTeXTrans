@@ -1,0 +1,35 @@
+# 本地私有配置（API 密钥等）
+config/local.toml
+.env
+.env.*
+!.env.example
+
+# Python 缓存与构建产物
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+src/formats/pdf/*.pyc
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 临时目录与工具状态
+tmp/
+.omx/
+.cache/
+
+# Downloaded papers and generated translations stay local
+outputs/
+tex source/
+
+# LaTeX 编译残留
+*.synctex.gz
+*.synctex(busy)
+*.aux
+*.fls
+*.fdb_latexmk
+*.xdv
