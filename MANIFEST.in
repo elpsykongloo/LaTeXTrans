@@ -1,0 +1,11 @@
+include LICENSE README.md README_ZH.md CHANGELOG.md CONTRIBUTING.md
+include pyproject.toml setup.py requirements.txt pytest.ini .gitignore
+include config/default.toml
+recursive-include terms *.csv
+recursive-include tests *.py
+include .github/workflows/ci.yml
+prune outputs
+prune tmp
+prune build
+prune dist
+global-exclude local.toml .env *.pyc *.pyo

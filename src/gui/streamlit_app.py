@@ -8,27 +8,34 @@ from typing import Any, Dict, List
 import streamlit as streamlit_backend
 import toml
 
-from src.runtime import run_translation, split_multivalue_text
+from src.runtime import as_bool, load_layered_config, resolve_config_path, run_translation, split_multivalue_text
 from src.utils.progress import get_progress_backend, set_progress_backend
 
 
 def _collect_result_pdfs(result: Dict[str, Any]) -> List[str]:
+    """Collect this run's PDFs, including preserved translations after bilingual failure."""
     output_dir = Path(result["output_dir"])
     target_language = result["config"].get("target_language", "ch")
     selected: List[str] = []
 
-    for project_dir in result["projects"]:
-        project_name = Path(project_dir).name
+    items = list(result.get("completed_projects", []))
+    items.extend(item for item in result.get("failed_projects", []) if item.get("status") == "failed_bilingual")
+    for item in items:
+        project_name = Path(item["project_dir"]).name
         project_output_dir = output_dir / f"{target_language}_{project_name}"
-        translated_pdf = project_output_dir / f"{target_language}_{project_name}.pdf"
+        translated_pdf = Path(item.get("pdf_path") or project_output_dir / f"{target_language}_{project_name}.pdf")
         original_pdf = project_output_dir / project_name / f"{project_name}.pdf"
 
         if translated_pdf.exists():
             selected.append(str(translated_pdf))
         if original_pdf.exists():
             selected.append(str(original_pdf))
+        for key in ("bilingual_pdf_path", "original_pdf_path"):
+            path = item.get(key)
+            if path and Path(path).is_file():
+                selected.append(str(path))
 
-    return selected
+    return list(dict.fromkeys(selected))
 
 
 class StreamlitLogWriter(io.TextIOBase):
@@ -81,10 +88,14 @@ class StreamlitLogWriter(io.TextIOBase):
 
 
 def _load_defaults(config_path: str) -> Dict[str, Any]:
+    # 与 CLI 一致：default.toml → config/local.toml → 环境变量，密钥不必写在跟踪文件中。
     try:
-        return toml.load(config_path)
+        return load_layered_config(config_path)
     except Exception:
-        return {}
+        try:
+            return toml.load(config_path)
+        except Exception:
+            return {}
 
 
 def _ensure_session_state() -> None:
@@ -147,6 +158,17 @@ def _sidebar_form(defaults: Dict[str, Any]) -> Dict[str, Any]:
     model = streamlit_backend.sidebar.text_input("Model", llm_defaults.get("model", ""))
     base_url = streamlit_backend.sidebar.text_input("Base URL", llm_defaults.get("base_url", ""))
     api_key = streamlit_backend.sidebar.text_input("API Key", llm_defaults.get("api_key", ""), type="password")
+    concurrency = streamlit_backend.sidebar.number_input(
+        "Concurrency",
+        min_value=1,
+        max_value=1000,
+        value=int(llm_defaults.get("concurrency_limit", 10) or 10),
+        step=1,
+    )
+    thinking_options = ["disabled", "enabled"]
+    thinking_default = str(llm_defaults.get("thinking_type", "disabled")).strip().lower()
+    thinking_index = thinking_options.index(thinking_default) if thinking_default in thinking_options else 0
+    thinking = streamlit_backend.sidebar.selectbox("Thinking", thinking_options, index=thinking_index)
     tex_source_dir = streamlit_backend.sidebar.text_input("TeX Source Dir", defaults.get("tex_sources_dir", "tex source"))
     output_dir = streamlit_backend.sidebar.text_input("Output Dir", defaults.get("output_dir", "outputs"))
     mode_options = {"0 - Normal": 0, "1 - Retry Errors": 1, "2 - Alt": 2}
@@ -156,11 +178,50 @@ def _sidebar_form(defaults: Dict[str, Any]) -> Dict[str, Any]:
         value=str(defaults.get("update_term", "False")) == "True",
     )
     all_existing = streamlit_backend.sidebar.checkbox("Process All Existing Projects", value=False)
+    copy_to_downloads = streamlit_backend.sidebar.checkbox(
+        "Copy PDF to Downloads",
+        value=as_bool(defaults.get("copy_to_downloads", True), True),
+        help="编译成功后把译文 PDF 以译文标题命名复制到下载目录。",
+    )
+    downloads_dir = streamlit_backend.sidebar.text_input(
+        "Downloads Dir",
+        defaults.get("downloads_dir", "") or "",
+        help="留空表示 ~/Downloads。",
+        disabled=not copy_to_downloads,
+    )
     user_term = streamlit_backend.sidebar.text_area(
         "User Terms",
         defaults.get("user_term", ""),
         height=120,
         help="Optional terminology guidance passed through the existing config field.",
+    )
+    resume = streamlit_backend.sidebar.checkbox(
+        "Resume Saved Progress", value=as_bool(defaults.get("resume", True), True),
+        help="恢复有效的阶段与成功片段；关闭后重新解析和翻译。",
+    )
+    bilingual = streamlit_backend.sidebar.checkbox(
+        "Bilingual PDF", value=as_bool(defaults.get("bilingual", False)),
+        help="在译文之外生成原文与译文对照 PDF。",
+    )
+    layouts = ["side_by_side", "interleaved"]
+    layout_default = str(defaults.get("bilingual_layout", "side_by_side"))
+    bilingual_layout = streamlit_backend.sidebar.selectbox(
+        "Bilingual Layout", layouts, index=layouts.index(layout_default) if layout_default in layouts else 0,
+        format_func=lambda value: {"side_by_side": "左右对照", "interleaved": "原文/译文交替页"}[value],
+        disabled=not bilingual,
+    )
+    original_pdf = streamlit_backend.sidebar.text_input(
+        "Original PDF", defaults.get("original_pdf", "") or "", disabled=not bilingual,
+        help="留空时在项目目录查找；arXiv 项目可复用原文下载。页数不同会补空页。",
+    )
+    compile_repair = streamlit_backend.sidebar.checkbox(
+        "Repair Compilation Errors", value=as_bool(defaults.get("compile_repair", True), True),
+        help="编译失败时按错误日志尝试修复。",
+    )
+    compile_repair_attempts = streamlit_backend.sidebar.number_input(
+        "Compilation Repair Attempts", min_value=0, max_value=5,
+        value=max(0, min(5, int(defaults.get("compile_repair_attempts", 2)))), step=1,
+        disabled=not compile_repair,
     )
 
     return {
@@ -170,12 +231,22 @@ def _sidebar_form(defaults: Dict[str, Any]) -> Dict[str, Any]:
         "model": model.strip(),
         "url": base_url.strip(),
         "key": api_key.strip(),
+        "concurrency": int(concurrency),
+        "thinking": thinking,
         "source": tex_source_dir.strip(),
         "output": output_dir.strip(),
         "mode": mode_options[selected_mode],
         "update_term": "True" if update_term else "False",
         "all_existing": all_existing,
         "user_term": user_term.strip(),
+        "copy_to_downloads": copy_to_downloads,
+        "downloads_dir": downloads_dir.strip(),
+        "resume": resume,
+        "bilingual": bilingual,
+        "bilingual_layout": bilingual_layout,
+        "original_pdf": original_pdf.strip(),
+        "compile_repair": compile_repair,
+        "compile_repair_attempts": int(compile_repair_attempts),
     }
 
 
@@ -260,6 +331,11 @@ def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs:
         streamlit_backend.info("No PDF files were found under the output directory yet.")
 
     if failed:
+        with streamlit_backend.expander("Failed Projects", expanded=True):
+            for item in failed:
+                streamlit_backend.error(
+                    f"`{item['project_name']}` — {item.get('status', 'error')}: {item.get('error', '')}"
+                )
         failed_paths = [item["project_dir"] for item in failed]
         retry_payload = {
             "params": dict(params),
@@ -369,13 +445,17 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
                 overall_bar.progress(event["index"] / event["total"])
         elif event["type"] == "project_error":
             stats_placeholder.metric("Projects", f"{event['index']}/{event['total']}")
-            stage_text.markdown(f"**Stage** Error in `{event['project_name']}`: {event['error']}")
+            stage_text.markdown(
+                f"**Stage** Failed `{event['project_name']}` ({event.get('status', 'error')}): {event['error']}"
+            )
 
     overrides = {
         "paper_list": inputs["paper_list"],
         "model": params["model"],
         "url": params["url"],
         "key": params["key"],
+        "concurrency": params["concurrency"],
+        "thinking": params["thinking"],
         "source": params["source"],
         "output": params["output"],
         "source_language": params["source_language"],
@@ -383,6 +463,14 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
         "mode": params["mode"],
         "user_term": params["user_term"],
         "update_term": params["update_term"],
+        "copy_to_downloads": params.get("copy_to_downloads", True),
+        "downloads_dir": params.get("downloads_dir", ""),
+        "resume": params.get("resume", True),
+        "bilingual": params.get("bilingual", False),
+        "bilingual_layout": params.get("bilingual_layout", "side_by_side"),
+        "original_pdf": params.get("original_pdf", ""),
+        "compile_repair": params.get("compile_repair", True),
+        "compile_repair_attempts": params.get("compile_repair_attempts", 2),
     }
 
     writer = StreamlitLogWriter(log_placeholder, state)
@@ -408,9 +496,11 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
 
     stage_bar.progress(1.0)
     stage_text.markdown("**Stage** Finished")
-    results_placeholder.success(
-        f"Completed {len(result['completed_projects'])} project(s), failed {len(result['failed_projects'])}."
-    )
+    summary = f"Completed {len(result['completed_projects'])} project(s), failed {len(result['failed_projects'])}."
+    if result["failed_projects"]:
+        results_placeholder.warning(summary)
+    else:
+        results_placeholder.success(summary)
     _render_result_files(result=result, params=params, inputs=inputs)
 
 
@@ -453,8 +543,8 @@ def main() -> None:
         if not (inputs["paper_list"] or inputs["project_items"] or params["all_existing"]):
             streamlit_backend.error("No input provided. Add arXiv IDs, local projects, or enable all-existing mode.")
         else:
-            config_candidate = Path(params["config_path"])
-            if not config_candidate.exists():
+            config_candidate = resolve_config_path(params["config_path"])
+            if not config_candidate.is_file():
                 streamlit_backend.error(f"Config file not found: {params['config_path']}")
             else:
                 _run_streamlit_job(params=params, inputs=inputs, title="Current Run")

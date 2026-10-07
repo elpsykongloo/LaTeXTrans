@@ -1,3 +1,11 @@
+## LaTeXTrans — maintained fork
+
+This is the **0.2.0 maintained fork** at [elpsykongloo/LaTeXTrans](https://github.com/elpsykongloo/LaTeXTrans), based on [NiuTrans/LaTeXTrans](https://github.com/NiuTrans/LaTeXTrans). Fork releases and support are maintained here; this is not an official NiuTrans release.
+
+The enhanced workflow adds resumable translation, bilingual PDFs, bounded request concurrency, private configuration, usage reports, and localized compilation repair. Resume and bilingual output draw on [Saverm666's fork](https://github.com/Saverm666/LaTeXTrans); parser and reconstruction improvements draw on [Hydrofoooil's TeXClaudeTrans](https://github.com/Hydrofoooil/TeXClaudeTrans). The original MIT license and copyright are retained.
+
+See [release notes](CHANGELOG.md) and [contribution and verification guidance](CONTRIBUTING.md). Small fixes are contributed back to upstream independently.
+
 <div align="center">
 
 English | [中文](README_ZH.md)
@@ -44,10 +52,15 @@ LaTeXTrans is a structured LaTeX document translation system based on multi-agen
 
 #### 1. Clone Repository
 
+Use Python **3.10–3.13**. CI checks Linux and Windows with Python 3.10/3.12 and Linux with Python 3.13. Create a virtual environment before installing:
+
 ```bash
-git clone https://github.com/NiuTrans/LaTeXTrans.git
+git clone https://github.com/elpsykongloo/LaTeXTrans.git
 cd LaTeXTrans
-pip install -e .
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e .
 ```
 
 #### (Optional) Use Conda Environment
@@ -55,7 +68,7 @@ pip install -e .
 ```bash
 conda create -n latextrans python=3.10 -y
 conda activate latextrans
-git clone https://github.com/NiuTrans/LaTeXTrans.git
+git clone https://github.com/elpsykongloo/LaTeXTrans.git
 cd LaTeXTrans
 pip install -e .
 ```
@@ -71,28 +84,35 @@ For MikTex, installation please be sure to select "install on the fly", in addit
 
 ### Local Configuration
 
-Please edit the configuration file before use:
-
-```arduino
-config/default.toml
-```
-
-Set the language model's API key and base URL in default.toml :
+Keep shared defaults in `config/default.toml`. Store API credentials and personal
+settings in the adjacent `config/local.toml`, which is excluded from Git:
 
 ```toml
-model = " " # model name (For example, deepseek-chat)
-api_key = " " # your_api_key_here
-base_url = " " # base url of the API (For example, https://api.deepseek.com/v1/chat/completions)
+[llm_config]
+model = "your_model"
+api_key = "your_api_key"
+base_url = "https://api.example.com/v1" # Replace with your provider's actual endpoint
+concurrency_limit = 10
 ```
 
- > [!NOTE]
-The following example shows the recommended base_url for different models:
+Settings are applied in this order: main config, adjacent `local.toml`, environment
+variables, then CLI / GUI overrides. Supported environment variables are
+`LATEXTRANS_API_KEY`, `LATEXTRANS_BASE_URL`, and `LATEXTRANS_MODEL`. The endpoint may
+be a service root, a `/v1` base, or a complete `/chat/completions` URL.
 
-| Model |base_url| 
-|:-|:-|
-|deepseek-chat|https://api.deepseek.com/v1/chat/completions|
-|gpt-4o|https://api.openai.com/v1/chat/completions|
-|gemini-2.5-pro|https://generativelanguage.googleapis.com/v1beta/openai/chat/completions|
+The public default leaves the model, endpoint, and API key empty; configure all three for your provider. When installed from a wheel, bundled defaults are available without a checkout; create `config/local.toml` in your working directory for personal overrides, or pass `--config /path/to/config.toml`.
+
+The default request concurrency is 10. HTTP 429 and 502/503/504 responses retry with
+backoff and honor `Retry-After`. The `[llm_config]` section also accepts `timeout`
+(seconds, compatible with upstream), `max_tokens`, `temperature`, `max_chunk_chars`,
+and `glossary_max_terms`. Glossary terms apply in every translation mode.
+Set `use_context = true` to provide title, abstract, and section context;
+`context_summary = true` makes an additional model call to summarize the document.
+Each project's `usage.json` records requests and token usage. Input and output
+prices per million tokens can be supplied with `price_input_per_mtok` and
+`price_output_per_mtok` to estimate cost.
+
+Use a provider that supports the OpenAI-compatible Chat Completions request format. Model availability and endpoint URLs are provider-specific; consult your provider's documentation. Provider-specific thinking options can be configured separately.
 
 # 📚 Usage
 
@@ -151,6 +171,57 @@ To process every existing project under `tex source`, run:
 latextrans --all-existing
 ```
 
+### Resume, bilingual PDFs, and compile repair
+
+Resume is enabled by default. Repeating the same command after an interruption
+reuses parsed data and validated translation units, then processes the remaining
+work. A completed project reuses its PDF if it still exists. Checkpoints use source
+paths, file sizes, modification times, translation settings, and glossary metadata.
+Changing the model, language, glossary, or chunk settings invalidates translations;
+changing only compile repair options preserves translation and regenerates the PDF.
+
+```bash
+# Start a fresh translation; --no-resume also disables checkpoint reuse
+latextrans --project "D:\\path\\to\\paper" --force
+
+# Original on the left and translation on the right
+latextrans --arxiv 2508.18791v2 --bilingual
+
+# Interleave original and translated pages using an explicit local original PDF
+latextrans --project "D:\\path\\to\\paper" --bilingual --bilingual-layout interleaved --original-pdf "D:\\path\\to\\original.pdf"
+
+# Disable compile repair and the titled copy in Downloads
+latextrans --project "D:\\path\\to\\paper" --no-compile-repair --no-downloads
+```
+
+Bilingual output uses `pypdf`, installed with the project, and pads unequal page
+counts with blank pages. arXiv projects use the downloaded original PDF; local
+projects can specify `--original-pdf` or the top-level `original_pdf` setting.
+A bilingual export failure is reported as a failure while preserving the translated PDF.
+
+Compile repair makes additional LLM requests and may incur provider charges when a compilation error is repairable. It is enabled with the top-level settings `compile_repair = true` and
+`compile_repair_attempts = 2`, with a hard limit of five attempts. The model receives limited context around TeX errors
+and edits only the generated translation. Backups, `repair_report.json`, and
+`repair_usage.json` are retained in the output directory. Missing tools, packages,
+or fonts produce diagnostics. Any translation, validation, compilation, or
+bilingual export failure makes the CLI exit with a nonzero status.
+
+Validation accepts equivalent standalone prose symbols, such as `\(\sim\)` and
+“～”, or `\ldots` and “……”. Mathematical expressions, delimiters, and structural
+placeholders remain strict. Set `validation_prose_equivalences = false` to disable
+the prose equivalences.
+
+The parser protects code environments such as `verbatim`, `Verbatim`, `lstlisting`,
+and `minted`, as well as inline code. It handles starred lists, `captionof` type
+arguments, author `thanks`, and explicit visible text commands inside macro
+definitions. Main-file selection honors `00README.json` and recorded main files,
+then favors shallow paper sources over supplementary candidates.
+
+Resume and bilingual output were adapted from [Saverm666's fork](https://github.com/Saverm666/LaTeXTrans).
+Parser and reconstruction fixes were adapted from [Hydrofoooil's TeXClaudeTrans](https://github.com/Hydrofoooil/TeXClaudeTrans).
+Bilingual PDFs pair pages by index; changes in translated pagination can shift the
+content on corresponding pages.
+
 ### GUI via Streamlit
 
 If you want a browser-based GUI with live workflow progress, logs, and runtime configuration, launch:
@@ -166,7 +237,9 @@ streamlit run src/gui/streamlit_app.py
 ```
 
  > [!NOTE]
-Although LaTeXTrans supports translation from any language to any language, the current version has only made relatively complete compilation adaptations for translation from English to Chinese. When translating to other languages, the final output pdf may contain errors. We welcome you to raise an issue to describe the problem you have encountered, and we will solve it case by case.
+Source and target languages are configurable. Chinese and Japanese currently have
+Unicode engine compilation support; other target languages need template-specific
+layout validation.
 
 <!-- # 🧰 Experimental Results
 

@@ -23,6 +23,7 @@ env_system_prompt_with_dict = None
 set_need_trans_for_envs_system_prompt = None
 retrans_error_parts_system_prompt = None
 extract_terminology_system_prompt = None
+get_summary_system_prompt = None
 refine_summary_system_prompt = None
 section_system_prompt_with_sum = None
 caption_system_prompt_with_sum = None
@@ -255,6 +256,7 @@ def init_prompts(source_lang: str, target_lang: str):
        - LaTeX control commands like `\label{{}}`, `\cite{{}}`, `\ref{{}}`, `\textbf{{}}`, `\emph{{}}`.
        - Math environments: `$...$`, `\[...\]`, `\begin{{equation}}...\end{{equation}}`, etc.
        - Layout units with LaTeX dimensions (e.g., `\vspace{{-1.125cm}}`, `[scale=0.58]`)
+       - Every individual invocation of a control command. Do not merge, split, delete, or duplicate repeated commands; for example, keep `\textbf{{B}}ounded \textbf{{P}}rivileged \textbf{{C}}ritic \textbf{{O}}ptimization` as four separate `\textbf` invocations. Preserve their order whenever the target-language syntax allows it.
     4. Do not alter special characters like `\%`, `\#`, `\&`, etc.
     5. For highlight or style commands (e.g., `\hl{{...}}`, `\ctext[RGB]{{...}}{{...}}`), **do not translate the arguments**. Keep the original {source_lang} content inside these commands.
     6. Add appropriate spacing before and after special characters where needed to avoid layout issues during LaTeX compilation (e.g., `| special\_token | <summary>`).
@@ -262,6 +264,7 @@ def init_prompts(source_lang: str, target_lang: str):
     8. Ensure your correction improves fluency, clarity, and academic accuracy in {target_lang}, with consistent use of terminology.
     9. Do **not include any explanation, comment, or formatting wrapper** (like triple backticks or additional remarks).
     10. **Preserve all artificial placeholders** such as `<PLACEHOLDER_CAP_...>`, `<PLACEHOLDER_ENV_...>`, `<PLACEHOLDER_..._begin>`, `<PLACEHOLDER_..._end>`, etc.
+    11. Before returning the result, compare the LaTeX structure with `[Original]`. Every command name and count must be identical; environment boundaries, structural placeholders, nesting, and their order must remain identical. Inline formulas, citations, and formatting commands may move with the surrounding sentence when required by the target-language word order, but no command may be merged, split, deleted, or duplicated.
     
     ---
     
@@ -487,3 +490,37 @@ def init_prompts(source_lang: str, target_lang: str):
     9.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
     10.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
     """
+
+
+def build_glossary_block(pairs) -> str:
+    """把与当前片段相关的术语对拼成追加到系统提示末尾的术语表。"""
+    pairs = list(pairs or [])
+    if not pairs:
+        return ""
+    lines = "\n".join(f'"{source}" - "{target}"' for source, target in pairs)
+    return (
+        "\nWhen translating, you must strictly use the following glossary for substitution. "
+        "This is the highest priority rule to ensure the consistency of terms throughout the text.\n"
+        f"<Glossary>:\n{lines}\n"
+        "Now, please translate the following new paragraph. "
+        "Maintain the terminology from the glossary provided."
+    )
+
+
+def build_context_block(title: str = "", summary: str = "", section_title: str = "") -> str:
+    """可选的论文级上下文（标题、摘要/概要、当前章节标题），仅供理解，不得输出。"""
+    lines = []
+    if title:
+        lines.append(f"Paper title: {title}")
+    if summary:
+        lines.append(f"Paper summary: {summary}")
+    if section_title:
+        lines.append(f"Current section: {section_title}")
+    if not lines:
+        return ""
+    return (
+        "\n<Document context> (reference only: use it to resolve terminology, "
+        "abbreviations and pronouns; never translate, copy or output this block)\n"
+        + "\n".join(lines)
+        + "\n</Document context>"
+    )

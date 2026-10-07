@@ -1,104 +1,10 @@
 ﻿import argparse
-import os
-import tarfile
-import zipfile
-from pathlib import Path
+import sys
+import warnings
 
-import toml
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
-from src.agents.coordinator_agent import CoordinatorAgent
-from src.formats.latex.prompts import *
-from src.formats.latex.utils import (
-    batch_download_arxiv_tex,
-    extract_arxiv_ids,
-    extract_compressed_files,
-    get_arxiv_category,
-    get_profect_dirs,
-)
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-
-
-def _resolve_path(path_value: str) -> Path:
-    p = Path(path_value)
-    if p.is_absolute():
-        return p
-    return (PROJECT_ROOT / p).resolve()
-
-
-def _is_local_archive(path: str) -> bool:
-    p = Path(path)
-    if not path or not p.is_file():
-        return False
-    lower = p.name.lower()
-    return lower.endswith((".zip", ".tar", ".tar.gz", ".tgz"))
-
-
-def _archive_project_dir(archive_path: str, projects_dir: str) -> str:
-    name = os.path.basename(archive_path)
-    lower = name.lower()
-    if lower.endswith(".tar.gz"):
-        stem = name[:-7]
-    elif lower.endswith(".tgz"):
-        stem = name[:-4]
-    elif lower.endswith(".tar"):
-        stem = name[:-4]
-    elif lower.endswith(".zip"):
-        stem = name[:-4]
-    else:
-        stem = os.path.splitext(name)[0]
-    return os.path.join(projects_dir, stem)
-
-def _ensure_unique_dir(base_dir: Path) -> Path:
-    if not base_dir.exists():
-        return base_dir
-    index = 1
-    while True:
-        candidate = base_dir.parent / f"{base_dir.name}_{index}"
-        if not candidate.exists():
-            return candidate
-        index += 1
-
-
-def _is_within_dir(base_dir: Path, target_path: Path) -> bool:
-    try:
-        target_path.resolve().relative_to(base_dir.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _safe_extract_zip(zip_ref: zipfile.ZipFile, target_dir: Path) -> None:
-    for member in zip_ref.infolist():
-        member_path = target_dir / member.filename
-        if not _is_within_dir(target_dir, member_path):
-            raise ValueError(f"Unsafe zip member path: {member.filename}")
-    zip_ref.extractall(target_dir)
-
-
-def _safe_extract_tar(tar_ref: tarfile.TarFile, target_dir: Path) -> None:
-    for member in tar_ref.getmembers():
-        member_path = target_dir / member.name
-        if not _is_within_dir(target_dir, member_path):
-            raise ValueError(f"Unsafe tar member path: {member.name}")
-    tar_ref.extractall(target_dir)
-
-
-def _extract_local_archive(archive_path: str, projects_dir: str) -> str:
-    target_dir = _ensure_unique_dir(Path(_archive_project_dir(archive_path, projects_dir)))
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    if zipfile.is_zipfile(archive_path):
-        with zipfile.ZipFile(archive_path, "r") as zip_ref:
-            _safe_extract_zip(zip_ref, target_dir)
-        return str(target_dir)
-
-    if tarfile.is_tarfile(archive_path):
-        with tarfile.open(archive_path, "r:*") as tar_ref:
-            _safe_extract_tar(tar_ref, target_dir)
-        return str(target_dir)
-
-    raise ValueError(f"Unsupported archive format: {archive_path}")
+from src.runtime import format_run_summary, run_translation, split_cli_items
 
 
 def main():
@@ -110,7 +16,19 @@ def main():
     parser.add_argument("--config", type=str, default="config/default.toml", help="Path to the config TOML file.")
     parser.add_argument("--model", type=str, default="", help="Model for translating.")
     parser.add_argument("--url", type=str, default="", help="Model url.")
-    parser.add_argument("--key", type=str, default="", help="Model key.")
+    parser.add_argument(
+        "--key",
+        type=str,
+        default="",
+        help="Model key. Prefer config/local.toml or the LATEXTRANS_API_KEY env var.",
+    )
+    parser.add_argument("--concurrency", type=int, default=None, help="Maximum concurrent LLM requests.")
+    parser.add_argument(
+        "--thinking",
+        choices=["enabled", "disabled"],
+        default="",
+        help="Thinking mode for OpenAI-compatible payloads.",
+    )
     parser.add_argument("--arxiv", nargs="+", default=[], help="arXiv ID(s), comma-separated.")
     parser.add_argument(
         "--project",
@@ -125,91 +43,60 @@ def main():
         action="store_true",
         help="Process all existing projects under tex source directory when no --arxiv/--project is provided.",
     )
+    parser.add_argument(
+        "--no-downloads",
+        action="store_true",
+        help="Do not copy the translated PDF to the Downloads directory.",
+    )
+    parser.add_argument(
+        "--downloads-dir",
+        type=str,
+        default="",
+        help="Directory for the titled PDF copy (default: ~/Downloads).",
+    )
+    parser.add_argument("--no-resume", action="store_true", help="Translate afresh instead of resuming saved stages and fragments.")
+    parser.add_argument("--force", action="store_true", help="Force a fresh parse and translation, ignoring completed checkpoints.")
+    bilingual_group = parser.add_mutually_exclusive_group()
+    bilingual_group.add_argument("--bilingual", action="store_true", default=None, help="Also generate an original/translation bilingual PDF.")
+    bilingual_group.add_argument("--no-bilingual", dest="bilingual", action="store_false", help="Disable bilingual PDF output.")
+    parser.add_argument("--bilingual-layout", choices=["side_by_side", "interleaved"], default="", help="Bilingual page layout.")
+    parser.add_argument("--original-pdf", default="", help="Original PDF path for bilingual output (otherwise detected or downloaded).")
+    parser.add_argument("--no-compile-repair", action="store_true", help="Disable automatic repair after TeX compilation errors.")
+    parser.add_argument("--compile-repair-attempts", type=int, default=None, help="Maximum compilation repair attempts.")
 
     args = parser.parse_args()
-    config = toml.load(args.config)
-
-    if args.url:
-        config["llm_config"]["base_url"] = args.url
-    if args.arxiv:
-        arxiv_raw = " ".join(args.arxiv)
-        arxiv_items = [item.strip() for item in arxiv_raw.split(",") if item.strip()]
-        config["paper_list"].extend(arxiv_items)
-
-    project_items = []
-    if args.project:
-        project_raw = " ".join(args.project)
-        project_items = [item.strip() for item in project_raw.split(",") if item.strip()]
-
-    if args.model:
-        config["llm_config"]["model"] = args.model
-    if args.key:
-        config["llm_config"]["api_key"] = args.key
-    if args.source:
-        config["tex_sources_dir"] = args.source
-    if args.output:
-        config["output_dir"] = args.output
-
-    input_items = config.get("paper_list", [])
-    projects_dir = str(_resolve_path(config.get("tex_sources_dir", "tex source")))
-    output_dir = str(_resolve_path(config.get("output_dir", "outputs")))
-
-    os.makedirs(projects_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-
-    paper_list = extract_arxiv_ids(input_items)
-
-    if paper_list or project_items:
-        projects = []
-
-        if paper_list:
-            projects.extend(batch_download_arxiv_tex(paper_list, projects_dir))
-            if not config.get("user_term"):
-                config["category"] = get_arxiv_category(paper_list)
-            # Keep legacy behavior for downloaded arXiv sources.
-            extract_compressed_files(projects_dir)
-
-        for project_path in project_items:
-            resolved_project_path = str(_resolve_path(project_path))
-            if os.path.isdir(resolved_project_path):
-                projects.append(os.path.abspath(resolved_project_path))
-                continue
-            if _is_local_archive(resolved_project_path):
-                try:
-                    projects.append(_extract_local_archive(resolved_project_path, projects_dir))
-                except Exception as e:
-                    print(f"[SKIP] Failed to extract local archive {project_path}: {e}")
-                continue
-            print(f"[SKIP] Invalid local project path: {project_path}")
-    elif args.all_existing:
-        print("No explicit inputs. Processing all existing projects in the specified directory.")
-        extract_compressed_files(projects_dir)
-        projects = get_profect_dirs(projects_dir)
-        if not projects:
-            raise ValueError("No projects found. Check 'tex_sources_dir' and 'paper_list' in config.")
-    else:
-        raise ValueError("No input provided. Use --arxiv or --project. To process existing projects, pass --all-existing.")
-
-    projects = [os.path.abspath(p) for p in projects if isinstance(p, (str, os.PathLike))]
-    projects = list(dict.fromkeys(projects))
-    if not projects:
-        raise ValueError("No valid TeX projects available for processing.")
-
-    total_projects = len(projects)
-    for idx, project_dir in enumerate(projects, start=1):
-        print(f"[{idx}/{total_projects}] Processing {os.path.basename(project_dir)}")
-
-        try:
-            latex_trans = CoordinatorAgent(
-                config=config,
-                project_dir=project_dir,
-                output_dir=output_dir,
-            )
-            latex_trans.workflow_latextrans()
-        except Exception as e:
-            print(f"Error processing project {os.path.basename(project_dir)}: {e}")
-            continue
+    if args.compile_repair_attempts is not None and args.compile_repair_attempts < 0:
+        parser.error("--compile-repair-attempts must be zero or greater.")
+    # 与 GUI 共用 src.runtime 的流水线：下载完成的论文立即进入解析/翻译/编译。
+    overrides = {
+        "url": args.url,
+        "model": args.model,
+        "key": args.key,
+        "concurrency": args.concurrency,
+        "thinking": args.thinking,
+        "source": args.source,
+        "output": args.output,
+        "paper_list": split_cli_items(args.arxiv),
+        "copy_to_downloads": False if args.no_downloads else None,
+        "downloads_dir": args.downloads_dir,
+        "resume": False if args.no_resume else None,
+        "force": True if args.force else None,
+        "bilingual": args.bilingual,
+        "bilingual_layout": args.bilingual_layout,
+        "original_pdf": args.original_pdf,
+        "compile_repair": False if args.no_compile_repair else None,
+        "compile_repair_attempts": args.compile_repair_attempts,
+    }
+    result = run_translation(
+        config_path=args.config,
+        overrides=overrides,
+        project_items=split_cli_items(args.project),
+        all_existing=args.all_existing,
+    )
+    print(format_run_summary(result))
+    # 任意项目失败（校验/生成/编译）时以非零状态码退出，便于脚本判断。
+    return 1 if result.get("failed_projects") else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

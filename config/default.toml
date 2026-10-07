@@ -1,5 +1,5 @@
 sys_name = "LaTeXTrans"
-version = "0.1.0"
+version = "0.2.0"
 target_language = "ch"
 source_language = "en"
 paper_list = []
@@ -9,8 +9,58 @@ category = {}
 update_term = "False"
 mode = 0
 user_term = ""
+# 同时处理的论文篇数（下载完成即进入解析/翻译/编译）
+project_concurrency = 4
+# 编译成功后是否把译文 PDF（以译文标题命名）复制到下载目录；CLI 可用 --no-downloads 关闭
+copy_to_downloads = true
+# 下载目录，留空表示 ~/Downloads
+downloads_dir = ""
+# 默认复用同一来源和翻译配置的阶段/片段记录；--force 或 --no-resume 可重新翻译
+resume = true
+# 可选双语 PDF：原文在左、译文在右，或原文/译文逐页交错
+bilingual = false
+bilingual_layout = "side_by_side"
+# 本地原文 PDF 路径；留空时查找项目原文或使用 arXiv 原文下载
+original_pdf = ""
+# 编译失败时允许 LLM 修复生成的译文 .tex，最多重编译两轮
+compile_repair = true
+compile_repair_attempts = 2
+# 正文中的独立省略号/约号接受等价 Unicode 写法，数学表达式内部仍严格校验
+validation_prose_equivalences = true
 
+# 私密配置（如 api_key）请写在未跟踪的 config/local.toml 中，它会深度合并覆盖本文件；
+# 也可用环境变量 LATEXTRANS_API_KEY / LATEXTRANS_BASE_URL / LATEXTRANS_MODEL 覆盖。
 [llm_config]
 model = ""
 api_key = ""
 base_url = ""
+concurrency_limit = 10
+thinking_type = "disabled"
+# 单次请求最大源文本字符数：越小单请求越快，整篇并发总耗时越短
+max_chunk_chars = 1500
+# 片段翻译后立即校验、就地重翻的次数
+inline_retries = 2
+# 请求失败后的重试等待（秒）
+retry_backoff = 1.0
+# 上游兼容超时（秒）；如另设 request_timeout，则优先使用 request_timeout
+timeout = 300
+max_tokens = 8192
+temperature = 0.7
+rate_limit_retries = 6
+rate_limit_backoff_base = 2.0
+rate_limit_backoff_max = 60.0
+min_concurrency = 1
+# 只附带片段实际出现的术语，最多 50 项
+glossary_max_terms = 50
+skip_untranslatable_chunks = true
+# 可选的标题、摘要、章节上下文；context_summary 会额外调用模型生成摘要
+use_context = false
+context_summary = false
+context_max_chars = 1200
+# 并行补发请求的时延估计；hedge_factor=0 可关闭补发
+hedge_factor = 2.0
+hedge_min_delay = 3.0
+hedge_chars_per_sec = 900.0
+# 每百万 token 的用户配置价格；0 表示不估算费用
+price_input_per_mtok = 0.0
+price_output_per_mtok = 0.0

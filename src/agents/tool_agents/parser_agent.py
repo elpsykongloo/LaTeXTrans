@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from src.agents.tool_agents.base_tool_agent import BaseToolAgent
+from src.formats.latex.utils import LATEX_PROSE_ENVIRONMENTS
 import src.formats.latex.prompts as pm
 from pathlib import Path
 import sys
@@ -21,7 +22,7 @@ class ParserAgent(BaseToolAgent):
         self.project_dir = project_dir  # Project path for parsing
         self.output_dir = output_dir  # Output directory for parsed files
         self.model = config["llm_config"].get("model", "gpt-4o")
-        self.base_url = config["llm_config"].get("base_url", None)
+        self.base_url = self.get_chat_completions_url()
         self.API_KEY = config["llm_config"].get("api_key", None)
 
     def execute(self) -> Any:
@@ -30,31 +31,22 @@ class ParserAgent(BaseToolAgent):
 
         from src.formats.latex.parser import LatexParser
         latex_parser = LatexParser(self.project_dir, self.output_dir)
-        latex_parser.parse() 
+        if latex_parser.parse() is False:
+            raise RuntimeError(
+                "未找到可解析的主 TeX 文件（需包含 \\documentclass 和 "
+                f"\\begin{{document}}）：{self.project_dir}"
+            )
 
         env_need_trans = []
         if latex_parser.envs_json:
             for env in latex_parser.envs_json:
-                if env["need_trans"] and env["env_name"] not in ['abstract', 'itemize']:
+                if env["need_trans"] and env["env_name"] not in LATEX_PROSE_ENVIRONMENTS:
                     env_need_trans.append(env)
 
-        if env_need_trans:
-            self.log(f"🤖💬 Starting seting need_trans for project...⏳: {os.path.basename(self.project_dir)}.")
-
-            placeholder_to_index = {
-                        env["placeholder"]: i for i, env in enumerate(latex_parser.envs_json)
-                    }
-            
-            total_envs = len(env_need_trans)
-            for idx, env in enumerate(env_need_trans, start=1):
-                if idx == 1 or idx == total_envs or idx % 10 == 0:
-                    print(f"Setting need_trans: {idx}/{total_envs}")
-                i = placeholder_to_index.get(env["placeholder"])
-                if i is not None:
-                    latex_parser.envs_json[i]["need_trans"] = self._request_llm_for_judge(
-                                                                    pm.set_need_trans_for_envs_system_prompt,
-                                                                    env["content"]
-                                                                    )
+        # need_trans 的 LLM 判定改由 TranslatorAgent 与章节翻译并发执行，
+        # 解析阶段只打标记，不再逐个阻塞请求。
+        for env in env_need_trans:
+            env["need_trans_pending"] = True
 
         self.save_file(Path(self.output_dir, "inputs_map.json"), "json", latex_parser.inputs_json)
         self.save_file(Path(self.output_dir, "envs_map.json"), "json", latex_parser.envs_json)
@@ -82,7 +74,7 @@ class ParserAgent(BaseToolAgent):
         """
         Request the api to set need trans for env
         """
-        payload = {
+        payload = self.build_chat_payload({
             "model": f"{self.model}",
             "messages": [
                 {
@@ -97,7 +89,7 @@ class ParserAgent(BaseToolAgent):
             "temperature": 0,
             # "max_length": 100000,
             "max_tokens": 50
-        }
+        })
 
         headers = {
             "Authorization": f"Bearer {self.API_KEY}",
@@ -107,10 +99,10 @@ class ParserAgent(BaseToolAgent):
         
         for attempt in range(1, 4):
             try:
-                response = requests.post(self.base_url, json=payload, headers=headers, timeout=100)
+                response = requests.post(self.base_url, json=payload, headers=headers, timeout=self.get_requests_timeout())
                 response.raise_for_status()  
                 result = response.json()
-                output = result["choices"][0]["message"]["content"].strip()
+                output = self.extract_chat_content(result)
 
                 if output.lower() == "true":
                     return True
@@ -118,7 +110,7 @@ class ParserAgent(BaseToolAgent):
                     return False
                 else:
                     return True                
-            except requests.exceptions.RequestException as e:
+            except (requests.exceptions.RequestException, KeyError, TypeError, ValueError) as e:
                 if attempt < 3:
                     print(f"{e}")
                     time.sleep(3)  
