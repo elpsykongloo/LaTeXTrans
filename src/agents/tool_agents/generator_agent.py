@@ -6,6 +6,8 @@ import os
 import shutil
 
 from src.utils.progress import st
+from src.utils.usage import UsageTracker
+from src.utils.paths import project_path
 import time
 
 base_dir = os.getcwd()
@@ -22,104 +24,110 @@ class GeneratorAgent(BaseToolAgent):
         self.config = config
         self.project_dir = project_dir
         self.output_dir = output_dir  # Output directory for parsed files
+        self.target_language = config.get("target_language", "ch")
+        self.usage = UsageTracker.from_llm_config(
+            self.get_llm_config(), project=Path(project_dir).name if project_dir else None
+        )
+        self.compile_failure = None
+        self.repair_report_path = None
 
     def execute(self) -> Any:
-        sys.stderr = open(os.devnull, 'w')
         self.process_b = st.empty()
         with self.process_b:
             self.progress_bar = st.progress(0)
         self.status_text = st.empty()
-        sys.stderr = sys.__stderr__
         
         self.log(f"🤖💬 Start generating for project...⏳: {os.path.basename(self.project_dir)}.")
 
-        sys.stderr = open(os.devnull, 'w')
         self.status_text.text("🔄 Start generating for project...")
         self.progress_bar.progress(5)
-        sys.stderr = sys.__stderr__
 
-        from src.formats.latex.compile import LaTexCompiler
         from src.formats.latex.reconstruct import LatexConstructor
 
-        sys.stderr = open(os.devnull, 'w')
         self.status_text.text("📂 Reading...")
         self.progress_bar.progress(10)
-        sys.stderr = sys.__stderr__
         sections = self.read_file(Path(self.output_dir, "sections_map.json"), "json")
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(20)
-        sys.stderr = sys.__stderr__
         captions = self.read_file(Path(self.output_dir, "captions_map.json"), "json")
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(30)
-        sys.stderr = sys.__stderr__
         envs = self.read_file(Path(self.output_dir, "envs_map.json"), "json")
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(40)
-        sys.stderr = sys.__stderr__
         newcommands = self.read_file(Path(self.output_dir, "newcommands_map.json"), "json")
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(50)
-        sys.stderr = sys.__stderr__
         inputs = self.read_file(Path(self.output_dir, "inputs_map.json"), "json")
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(60)
 
         self.status_text.text("📁 Creating translation project directory ..")
-        sys.stderr = sys.__stderr__
 
         transed_latex_dir = self._creat_transed_latex_folder(self.project_dir)
 
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(70)
-        sys.stderr = sys.__stderr__
 
         print(transed_latex_dir)
 
-        sys.stderr = open(os.devnull, 'w')
         self.status_text.text("🔨 Refactoring LaTeX document...")
-        sys.stderr = sys.__stderr__
         latex_constructor = LatexConstructor(
                                 sections=sections,
                                 captions=captions,
                                 envs=envs,
                                 inputs=inputs,
                                 newcommands=newcommands,
-                                output_latex_dir=transed_latex_dir
+                                output_latex_dir=transed_latex_dir,
+                                target_language=self.target_language,
                             )
         latex_constructor.construct()
 
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(80)
         self.status_text.text("🛠️ Compiling PDF document...")
-        sys.stderr = sys.__stderr__
 
-        latex_compiler = LaTexCompiler(output_latex_dir=transed_latex_dir)
-        pdf_file = latex_compiler.compile()
+        pdf_file = self._compile_generated_project(transed_latex_dir)
 
-        sys.stderr = open(os.devnull, 'w')
         self.progress_bar.progress(90)
-        sys.stderr = sys.__stderr__
         if pdf_file:
 
-            sys.stderr = open(os.devnull, 'w')
             self.status_text.text("✅ Successfully compiled PDF document.")
             self.progress_bar.progress(100)
             st.success(f"✅ Successfully generated for {os.path.basename(self.project_dir)}.")
-            time.sleep(2)
             self.process_b.empty()
             self.status_text.empty()
-            sys.stderr = sys.__stderr__
 
             self.log(f"✅ Successfully generated for {os.path.basename(self.project_dir)}.")
             return pdf_file
         else:
-            sys.stderr = open(os.devnull, 'w')
-            self.status_text.error("❌ Failed to compile PDF document.")
+            reason = (self.compile_failure or {}).get("message", "")
+            self.status_text.error(f"❌ Failed to compile PDF document. {reason}")
             self.process_b.empty()
-            sys.stderr = sys.__stderr__
             return None
-        
+
+    def _compile_generated_project(self, transed_latex_dir: str):
+        """Compile the generated copy and optionally repair localized TeX failures."""
+        from src.formats.latex.compile import LaTexCompiler
+        from src.formats.latex.repair import LatexCompileRepairAgent
+        from src.formats.latex.utils import target_language_family
+
+        compiler = LaTexCompiler(output_latex_dir=transed_latex_dir)
+        pdf = compiler.compile_ja() if target_language_family(self.target_language) == "ja" else compiler.compile()
+        enabled = str(self.config.get("compile_repair", True)).strip().lower() not in {"false", "0", "no", "off"}
+        if not pdf and enabled:
+            try:
+                repair = LatexCompileRepairAgent(
+                    self.config, project_dir=transed_latex_dir,
+                    source_dir=self.project_dir, usage=self.usage,
+                )
+                self.repair_report_path = str(repair.report_path)
+                pdf = repair.execute(compiler)
+            except Exception as exc:
+                # Repair/reporting failures must not hide the real TeX failure or
+                # turn it into an unrelated generation error. Do not log credentials.
+                self.log(f"编译修复未完成（{type(exc).__name__}），保留原编译失败。", level="warning")
+                pdf = None
+        self.compile_failure = compiler.last_failure
+        return pdf
+
+    def usage_summary(self) -> Dict[str, Any]:
+        """Compile-repair usage; stored separately from translation's usage.json."""
+        return self.usage.snapshot()
+
     def _creat_transed_latex_folder(self, src_dir: str) -> str:
         """
         Create a translated folder by copying the source directory and renaming it.
@@ -127,14 +135,27 @@ class GeneratorAgent(BaseToolAgent):
         if not os.path.isdir(src_dir):
             raise NotADirectoryError(f"The path {src_dir} is not a valid directory.")
 
-        base_name = os.path.basename(src_dir)
-        dest_dir = os.path.join(self.output_dir, base_name)
+        source = Path(src_dir).resolve()
+        output_root = Path(self.output_dir).resolve()
+        dest_path = output_root / source.name
+        resolved_dest = dest_path.resolve()
+        if (
+            resolved_dest.is_relative_to(source) or source.is_relative_to(resolved_dest)
+            or not resolved_dest.is_relative_to(output_root) or dest_path.is_symlink()
+        ):
+            raise ValueError("译文目录必须位于输出目录中，并与源项目目录独立。")
 
-        if os.path.exists(dest_dir):
-            shutil.rmtree(dest_dir)
-        shutil.copytree(src_dir, dest_dir)
+        # Validate before copying: copytree otherwise follows source links and
+        # imports files from outside the selected project into the translation.
+        for directory, subdirs, files in os.walk(source, followlinks=False):
+            for name in (*subdirs, *files):
+                project_path(source, Path(directory) / name)
 
-        return dest_dir
+        if dest_path.exists():
+            shutil.rmtree(dest_path)
+        shutil.copytree(source, dest_path)
+
+        return str(dest_path)
         
     
 

@@ -1,4 +1,37 @@
+import logging
 import sys
+
+# Streamlit 在没有 ScriptRunContext 的线程里调用 st.* 时会记录
+# "missing ScriptRunContext" 警告。过去的做法是全局替换 sys.stderr，
+# 这在多线程下会相互覆盖（并泄漏文件句柄、破坏 GUI 的日志重定向）。
+# 这里改为只给 Streamlit 对应的 logger 加过滤器，线程安全且不影响其它输出。
+_STREAMLIT_CONTEXT_LOGGERS = (
+    "streamlit.runtime.scriptrunner_utils.script_run_context",
+    "streamlit.runtime.scriptrunner.script_run_context",
+)
+
+
+class _MissingScriptRunContextFilter(logging.Filter):
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(record.msg)
+        return "ScriptRunContext" not in message
+
+
+_context_filter = _MissingScriptRunContextFilter()
+
+
+def silence_streamlit_context_warnings():
+    """幂等：屏蔽 Streamlit 的 missing ScriptRunContext 警告。"""
+    for name in _STREAMLIT_CONTEXT_LOGGERS:
+        logger = logging.getLogger(name)
+        if _context_filter not in logger.filters:
+            logger.addFilter(_context_filter)
+
+
+silence_streamlit_context_warnings()
 
 
 class _LinePrinter:
@@ -109,6 +142,7 @@ class _ProgressProxy:
 
 def set_progress_backend(backend):
     global _backend
+    silence_streamlit_context_warnings()
     _backend = backend
 
 

@@ -1,14 +1,16 @@
-beautifulsoup4==4.13.4
-pylatexenc==2.10
-PyYAML==6.0.2
-regex==2024.11.6
-Requests==2.32.4
-tiktoken==0.9.0
-toml==0.10.2
-tqdm==4.67.1
-aiohttp==3.11.16
-async-lru==2.0.5
-async-timeout==5.0.1
-pandas==2.2.3
-streamlit==1.44.1
-datetime
+# Compatible release ranges. Keep pylatexenc 2.x: the parser uses its 2.x API.
+beautifulsoup4>=4.13.4,<5
+pylatexenc>=2.10,<3
+PyYAML>=6.0.2,<7
+regex>=2024.11.6
+requests>=2.33.0,<3
+tiktoken>=0.9.0,<1
+toml>=0.10.2,<1
+tqdm>=4.67.1,<5
+aiohttp>=3.14.4,<4
+# pandas 3.x requires Python 3.11; retain 2.x for the Python 3.10 baseline.
+pandas>=2.2.3,<3
+# Include the Windows component path security fix (GHSA-7p48-42j8-8846).
+streamlit>=1.54.0,<2
+# Include upstream PDF resource-exhaustion fixes published in September 2026.
+pypdf>=6.19.0,<7

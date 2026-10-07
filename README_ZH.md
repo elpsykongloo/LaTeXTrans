@@ -1,3 +1,11 @@
+## LaTeXTrans — 持续维护的增强版 fork
+
+这里是 [elpsykongloo/LaTeXTrans](https://github.com/elpsykongloo/LaTeXTrans) 的 **0.2.0 维护版**，基于 [NiuTrans/LaTeXTrans](https://github.com/NiuTrans/LaTeXTrans)。本仓库独立维护增强版的发布与问题反馈，不代表 NiuTrans 官方版本。
+
+增强版加入断点续传、双语 PDF、受控请求并发、私有配置、用量报告和局部编译修复。续传与双语输出参考 [Saverm666 的 fork](https://github.com/Saverm666/LaTeXTrans)，解析与重建改进参考 [Hydrofoooil 的 TeXClaudeTrans](https://github.com/Hydrofoooil/TeXClaudeTrans)。保留原项目 MIT 许可和版权声明。
+
+详见[版本说明](CHANGELOG.md)与[贡献及验证流程](CONTRIBUTING.md)。适合上游的独立小修复会单独贡献回原仓库。
+
 <div align="center">
 
 [English](README.md) | 中文
@@ -42,10 +50,15 @@ LaTeXTrans 是一个基于多智能体协作的结构化 LaTeX 文档翻译系�
 
 #### 1. 克隆仓库
 
+使用 Python **3.10–3.13**。CI 覆盖 Linux / Windows 的 Python 3.10、3.12，以及 Linux 的 Python 3.13。建议先创建虚拟环境：
+
 ```bash
-git clone https://github.com/NiuTrans/LaTeXTrans.git
+git clone https://github.com/elpsykongloo/LaTeXTrans.git
 cd LaTeXTrans
-pip install -e .
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e .
 ```
 
 #### （可选）使用 Conda 虚拟环境
@@ -53,7 +66,7 @@ pip install -e .
 ```bash
 conda create -n latextrans python=3.10 -y
 conda activate latextrans
-git clone https://github.com/NiuTrans/LaTeXTrans.git
+git clone https://github.com/elpsykongloo/LaTeXTrans.git
 cd LaTeXTrans
 pip install -e .
 ```
@@ -69,29 +82,31 @@ pip install -e .
 # ⚙️ 配置说明
 
 
-使用前请编辑配置文件：
-
-```arduino
-config/default.toml
-```
-
-设置语言模型的API密钥和基础URL：
+公共默认值保存在 `config/default.toml`。将 API 密钥和个人设置写入同目录下的
+`config/local.toml`（已加入 `.gitignore`），例如：
 
 ```toml
-model = " " # model name (For example, deepseek-chat)
-api_key = " " # your_api_key_here
-base_url = " " # base url of the API (For example, https://api.deepseek.com/v1/chat/completions)
-timeout = 300 # LLM 请求超时时间,单位秒（默认100）
+[llm_config]
+model = "your_model"
+api_key = "your_api_key"
+base_url = "https://api.example.com/v1" # 替换为服务商的真实地址
+concurrency_limit = 10
 ```
 
- > [!NOTE]
-下面的例子是对于不同的模型，推荐使用的base_url：
+配置按“主配置 → 同目录 `local.toml` → 环境变量 → CLI / GUI 参数”的顺序覆盖。
+环境变量支持 `LATEXTRANS_API_KEY`、`LATEXTRANS_BASE_URL` 和 `LATEXTRANS_MODEL`。
+Base URL 可使用服务根地址、`/v1` 地址或完整 `/chat/completions` 地址。
+公共默认配置的模型、API 地址和密钥均留空，请按所用服务商填写。通过 wheel 安装后可直接使用包内默认配置，无需仓库目录；在当前工作目录创建 `config/local.toml` 保存个人覆盖项，或通过 `--config /path/to/config.toml` 指定配置。
 
-| Model |base_url| 
-|:-|:-|
-|deepseek-chat|https://api.deepseek.com/v1/chat/completions|
-|gpt-4o|https://api.openai.com/v1/chat/completions|
-|gemini-2.5-pro|https://generativelanguage.googleapis.com/v1beta/openai/chat/completions|
+默认 LLM 并发上限为 10；HTTP 429、502、503、504 会退避重试，并遵守 `Retry-After`。
+`[llm_config]` 下可设置 `timeout`（秒，兼容上游）、`max_tokens`、`temperature`、
+`max_chunk_chars`、`glossary_max_terms`。术语表在所有翻译模式中生效。
+
+如需把标题、摘要、章节名作为翻译上下文，可设置 `use_context = true`；
+`context_summary = true` 会额外调用模型生成摘要。每篇输出的 `usage.json` 记录请求和 token
+用量，设置 `price_input_per_mtok` / `price_output_per_mtok` 后可按用户提供的价格估算费用。
+
+请使用支持 OpenAI 兼容 Chat Completions 请求格式的服务。模型名称和 API 地址依服务商而异，请查阅其文档；思考模式等服务商特有选项可单独配置。
 
 
 # 📚 使用方式
@@ -150,6 +165,50 @@ latextrans --project D:\\path\\to\\paper_project_dir
 latextrans --all-existing
 ```
 
+### 断点续传、双语 PDF 与编译修复
+
+默认开启断点续传。中断后运行相同命令，会保留已解析的数据和通过校验的翻译片段，
+仅处理未完成的部分；已经完成且 PDF 仍存在的项目会直接复用。源文件的路径、大小、
+修改时间，以及翻译配置和术语文件元数据用于判断是否可复用。改变模型、语言、术语或
+分块设置后会重新翻译；仅改变编译修复选项时保留翻译并重新生成 PDF。
+
+```bash
+# 重新翻译，忽略现有续传记录（--no-resume 也可关闭续传）
+latextrans --project "D:\\path\\to\\paper" --force
+
+# 左右对照：原文在左，译文在右
+latextrans --arxiv 2508.18791v2 --bilingual
+
+# 逐页交错；本地项目可明确指定原文 PDF
+latextrans --project "D:\\path\\to\\paper" --bilingual --bilingual-layout interleaved --original-pdf "D:\\path\\to\\original.pdf"
+
+# 关闭编译自动修复和下载目录副本
+latextrans --project "D:\\path\\to\\paper" --no-compile-repair --no-downloads
+```
+
+双语功能依赖 `pypdf`（安装项目时自动安装），两份 PDF 页数不同时补空白页。
+arXiv 项目使用下载的原文 PDF；本地项目可使用 `--original-pdf` 或顶层 `original_pdf`。
+双语合成失败会明确报告失败，同时保留已生成的译文 PDF。
+
+可修复的编译错误会额外调用 LLM，并可能产生服务商费用。默认允许编译自动修复，顶层配置为 `compile_repair = true`、`compile_repair_attempts = 2`
+（每次编译最多允许 5 轮修复）。
+编译失败时模型只接收错误附近的有限 LaTeX 上下文，修复只写入生成的译文项目；
+原文不被修改。修复前文件备份、`repair_report.json` 和 `repair_usage.json` 保留在输出目录。
+缺少编译工具、包或字体等环境问题会报告诊断。任何项目翻译、校验、编译或双语合成失败，
+CLI 均返回非零退出码。
+
+校验允许正文独立约号和省略号的等价 Unicode 写法，如 `\(\sim\)` → “～”、
+`\ldots` → “……”；公式内部的命令、数学定界符及结构占位符仍保持严格检查。
+顶层 `validation_prose_equivalences = false` 可关闭这项等价处理。
+
+解析器保护 `verbatim` / `Verbatim` / `lstlisting` / `minted` 等代码环境和行内代码，
+支持带星号的列表、`captionof` 类型参数、作者 `thanks` 与宏定义内显式的可见文字命令。
+主文件选择保留 `00README.json` 与已记录主文件的优先级，常规候选优先浅层论文主稿。
+
+断点续传和双语输出参考 [Saverm666 的 fork](https://github.com/Saverm666/LaTeXTrans)，
+解析与重建稳健性修复参考 [Hydrofoooil 的 TeXClaudeTrans](https://github.com/Hydrofoooil/TeXClaudeTrans)，
+并按本地架构适配。双语 PDF 按页配对，译文分页变化可能使同页内容位置不同。
+
 ### Streamlit GUI
 
 如果你想使用带有进度显示、日志和可配置参数的图形界面，可以运行：
@@ -165,7 +224,8 @@ streamlit run src/gui/streamlit_app.py
 ```
 
  > [!NOTE]
-尽管 LaTeXTrans 支持任意语言到任意语言的翻译，但是目前版本仅对英文到中文的翻译做了相对完善的编译适配。翻译到其他语言时，最终输出的 pdf 可能会有错误，欢迎提出 issue 来描述您遇到的问题，我们会逐个解决。
+LaTeXTrans 可配置源语言和目标语言，当前提供中文与日文的 Unicode 引擎编译适配。
+其他目标语言的排版仍需根据具体模板验证。
 
 # 🖼️ 翻译样例
 
