@@ -44,6 +44,10 @@ _LATEX_PROTECTED_ARTIFACT_PATTERN = re.compile(
     r"|\[\[\[\s*/?\s*LATEXTRANS_[^\]\r\n]+\]\]\])",
     re.IGNORECASE,
 )
+# 论文中字面出现的 LLM 对话模板特殊 token，例如 ``<|endoftext|>``、
+# ``<|im\_start|>``。原样发给模型时，部分推理服务会把它们解析成真正的
+# 控制 token，导致输出被截断或对话结构错乱，因此整体保护、不交给模型。
+_CHAT_TEMPLATE_TOKEN_PATTERN = re.compile(r"<\|(?:[A-Za-z0-9.:\-]|\\?_){1,64}\|>")
 _LATEX_CONTROL_SEQUENCE_PATTERN = re.compile(
     r"\\(?:[A-Za-z@]+\*?|[^\s])",
     re.DOTALL,
@@ -605,6 +609,12 @@ def protect_latex_syntax(
         if placeholder:
             add_fragment(placeholder.start(), placeholder.end())
             position = placeholder.end()
+            continue
+
+        chat_token = _CHAT_TEMPLATE_TOKEN_PATTERN.match(text, position)
+        if chat_token:
+            add_fragment(chat_token.start(), chat_token.end())
+            position = chat_token.end()
             continue
 
         if text[position] in {"$", "\\"}:

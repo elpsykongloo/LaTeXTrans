@@ -1,9 +1,43 @@
+from functools import lru_cache
 from typing import Any, Dict, Optional
 from .utils import *
-import tiktoken
+import math
 import sys
 
 from src.utils.progress import st
+
+
+@lru_cache(maxsize=1)
+def _get_token_encoder():
+    """返回缓存的 tiktoken 编码器；不可用时返回 None，由调用方降级估算。
+
+    tiktoken 首次使用需要联网下载词表，离线或下载失败时不应中断解析。
+    """
+    try:
+        import tiktoken
+
+        return tiktoken.encoding_for_model("gpt-4")
+    except Exception as exc:  # 词表下载或导入失败均降级处理
+        print(f"⚠️ tiktoken 不可用，改用字符数估算 token：{exc}")
+        return None
+
+
+def count_tokens(text: str) -> int:
+    """估算文本 token 数，仅用于合并过短章节。
+
+    论文正文可能字面包含 ``<|endoftext|>`` 等特殊 token（例如介绍对话
+    模板的 LLM 论文）。这里把它们当作普通文本编码，避免 tiktoken 抛出
+    disallowed special token 异常。
+    """
+    if not text:
+        return 0
+    encoder = _get_token_encoder()
+    if encoder is not None:
+        try:
+            return len(encoder.encode(text, disallowed_special=()))
+        except Exception:  # 编码异常时退回估算
+            pass
+    return math.ceil(len(text) / 4)
 
 
 class LatexParser:
@@ -482,7 +516,6 @@ class LatexParser:
         """
         Merge sections that are too short to save the number of api requests
         """
-        enc = tiktoken.encoding_for_model("gpt-4")
         fixed_sections = [
             sec for sec in self.sections_json if sec["section"] in {"-1", "0"}
         ]
@@ -491,18 +524,20 @@ class LatexParser:
         sections = [
             sec for sec in self.sections_json if sec["section"] not in {"-1", "0"}
         ]
+        # 每个章节只编码一次；合并后的 token 数按各段之和加分隔换行估算。
+        section_tokens = [count_tokens(sec["content"]) for sec in sections]
 
         while i < len(sections):
             combined_content = sections[i]["content"]
             combined_section_ids = [sections[i]["section"]]
-            total_tokens = len(enc.encode(combined_content))
+            total_tokens = section_tokens[i]
             start_section = sections[i]
             j = i + 1
 
             while total_tokens < min_tokens and j < len(sections):
                 combined_content += "\n" + sections[j]["content"]
                 combined_section_ids.append(sections[j]["section"])
-                total_tokens = len(enc.encode(combined_content))
+                total_tokens += section_tokens[j] + 1
                 j += 1
 
             if total_tokens < min_tokens and len(merged_sections) > 0:

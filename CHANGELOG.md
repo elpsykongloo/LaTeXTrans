@@ -3,6 +3,12 @@
 This log describes the maintained fork at [elpsykongloo/LaTeXTrans](https://github.com/elpsykongloo/LaTeXTrans).
 Upstream releases remain available at [NiuTrans/LaTeXTrans](https://github.com/NiuTrans/LaTeXTrans).
 
+## Unreleased
+
+- Parse papers whose text contains literal LLM special tokens such as `<|endoftext|>`; token counting no longer raises tiktoken's disallowed-special-token error.
+- Keep chat-template tokens (`<|im_start|>`, `<|endoftext|>`, …) out of translation requests and restore them verbatim, so model servers cannot treat them as control tokens.
+- Count section tokens once instead of re-encoding merged text, and fall back to a character estimate when tiktoken or its vocabulary download is unavailable.
+
 ## 0.2.0 — 2026-10-07
 
 - Resume parsed stages and validated translation units after an interruption; completed PDFs can be reused offline. Add `--force` and `--no-resume`.
