@@ -1947,6 +1947,59 @@ JAPANESE_CJK_FONT_LINES = [
 ]
 
 
+CJK_FONT_FALLBACK_MARKER = "% LaTeXTrans: CJK font fallback"
+_CJK_SANS_FONT_NAME = re.compile(r"sans|hei|gothic", re.IGNORECASE)
+_CJK_MAIN_FONT_DECLARATION = re.compile(
+    r"\\setCJKmainfont\s*(?:\[[^\]]*\]\s*)?\{([^{}]*)\}"
+)
+
+
+def _chinese_fallback_font_lines(latex_code: str) -> List[str]:
+    """TeX Live/MiKTeX 自带 Fandol 字体，覆盖常用简体汉字，不依赖系统字体。"""
+    song = r"\setCJKmainfont[Extension=.otf,UprightFont=*-Regular,BoldFont=*-Bold,ItalicFont=FandolKai-Regular]{FandolSong}"
+    hei_main = r"\setCJKmainfont[Extension=.otf,UprightFont=*-Regular,BoldFont=*-Bold]{FandolHei}"
+    # 原稿正文用黑体类字体（如 Noto Sans SC）时保持无衬线风格。
+    declaration = _CJK_MAIN_FONT_DECLARATION.search(latex_code)
+    main = hei_main if declaration and _CJK_SANS_FONT_NAME.search(declaration.group(1)) else song
+    return [
+        main,
+        r"\setCJKsansfont[Extension=.otf,UprightFont=*-Regular,BoldFont=*-Bold]{FandolHei}",
+        r"\setCJKmonofont[Extension=.otf]{FandolFang-Regular}",
+    ]
+
+
+def add_cjk_font_fallback(latex_code: str, target_language: Optional[str] = "ch") -> str:
+    r"""在 ``\begin{document}`` 前改用完整的 CJK 字体。
+
+    部分模板自带只含原文少量汉字的子集字体（例如 arXiv 2610.19716 的
+    NotoSansSC-Prompts.ttf）。保留作者字体配置时，译文中子集之外的汉字会
+    被 XeTeX 静默丢弃。该函数只在编译日志确认缺字后调用，且只作用于
+    xeCJK；重复调用不会重复插入。
+    """
+    if CJK_FONT_FALLBACK_MARKER in latex_code:
+        return latex_code
+    masked = mask_latex_opaque_content(latex_code)
+    match = re.search(r"(?m)^[ \t]*\\begin\s*\{\s*document\s*\}", masked)
+    if not match:
+        return latex_code
+    if target_language_family(target_language) == "ja":
+        font_lines = JAPANESE_CJK_FONT_LINES
+    else:
+        font_lines = _chinese_fallback_font_lines(masked[:match.start()])
+    block = "\n".join(
+        [
+            CJK_FONT_FALLBACK_MARKER,
+            r"\makeatletter",
+            r"\@ifpackageloaded{xeCJK}{%",
+            *[line + "%" for line in font_lines],
+            r"}{}",
+            r"\makeatother",
+            "",
+        ]
+    )
+    return latex_code[:match.start()] + block + latex_code[match.start():]
+
+
 def add_chinese_package(latex_code: str) -> str:
     """
     为翻译后的中文文档添加 Unicode 中文支持。

@@ -105,7 +105,7 @@ class GeneratorAgent(BaseToolAgent):
         from src.formats.latex.repair import LatexCompileRepairAgent
         from src.formats.latex.utils import target_language_family
 
-        compiler = LaTexCompiler(output_latex_dir=transed_latex_dir)
+        compiler = LaTexCompiler(output_latex_dir=transed_latex_dir, target_language=self.target_language)
         pdf = compiler.compile_ja() if target_language_family(self.target_language) == "ja" else compiler.compile()
         enabled = str(self.config.get("compile_repair", True)).strip().lower() not in {"false", "0", "no", "off"}
         if not pdf and enabled:
@@ -122,6 +122,12 @@ class GeneratorAgent(BaseToolAgent):
                 self.log(f"编译修复未完成（{type(exc).__name__}），保留原编译失败。", level="warning")
                 pdf = None
         self.compile_failure = compiler.last_failure
+        missing_glyphs = getattr(compiler, "missing_glyphs", None)
+        if pdf and missing_glyphs:
+            self.log(
+                f"译文 PDF 仍缺少 {len(missing_glyphs)} 种 CJK 字符，请检查字体配置。",
+                level="warning",
+            )
         return pdf
 
     def usage_summary(self) -> Dict[str, Any]:

@@ -4,7 +4,32 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .utils import find_main_tex_file
+from .utils import add_cjk_font_fallback, find_main_tex_file
+
+# XeTeX/LuaTeX 遇到字体缺少的字形时只写日志并丢弃该字符，返回码仍为 0。
+_MISSING_CHARACTER = re.compile(r"Missing character: There is no (\S+?)(?: \(U\+[0-9A-Fa-f]+\))? in font ([^\r\n!]+)!")
+_CJK_RANGES = (
+    (0x2E80, 0x2FDF), (0x3000, 0x30FF), (0x3100, 0x31FF), (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF), (0xAC00, 0xD7AF), (0xF900, 0xFAFF), (0xFF00, 0xFFEF),
+    (0x20000, 0x3134F),
+)
+
+
+def _is_cjk_character(char: str) -> bool:
+    if len(char) != 1:
+        return False
+    code = ord(char)
+    return any(start <= code <= end for start, end in _CJK_RANGES)
+
+
+def find_missing_cjk_glyphs(log_text: str) -> Dict[str, int]:
+    """统计日志中被丢弃的 CJK 字符及出现次数。"""
+    missing: Dict[str, int] = {}
+    for match in _MISSING_CHARACTER.finditer(log_text or ""):
+        char = match.group(1)
+        if _is_cjk_character(char):
+            missing[char] = missing.get(char, 0) + 1
+    return missing
 
 
 _ENVIRONMENT_ERROR = re.compile(
@@ -133,10 +158,13 @@ class LaTexCompiler:
         r"\ifdefined\pdfgentounicode\else\newcount\pdfgentounicode\fi"
     )
 
-    def __init__(self, output_latex_dir: str):
+    def __init__(self, output_latex_dir: str, target_language: Optional[str] = "ch"):
         self.output_latex_dir = output_latex_dir
+        self.target_language = target_language
         self.failures: list[Dict[str, Any]] = []
         self.last_failure: Optional[Dict[str, Any]] = None
+        # 最终 PDF 中仍缺失的 CJK 字符，供日志与报告使用。
+        self.missing_glyphs: Dict[str, int] = {}
 
     @staticmethod
     def _tex_environment() -> Dict[str, str]:
@@ -153,6 +181,7 @@ class LaTexCompiler:
         """编译翻译后的文档，成功时返回本次生成的 PDF 路径。"""
         self.failures = []
         self.last_failure = None
+        self.missing_glyphs = {}
         self._remove_success_marker()
         tex_file = find_main_tex_file(self.output_latex_dir)
         if not tex_file:
@@ -164,6 +193,8 @@ class LaTexCompiler:
         for engine in engines:
             out_dir = os.path.join(self.output_latex_dir, f"build_{engine}")
             pdf_path = self._compile_with_engine(tex_file, out_dir, engine)
+            if pdf_path and engine == "xelatex":
+                pdf_path = self._ensure_cjk_glyphs(tex_file, out_dir, engine, pdf_path)
             if pdf_path:
                 self.last_failure = None
                 self._write_success_marker()
@@ -185,7 +216,63 @@ class LaTexCompiler:
         一致）；原稿自带 luatexja 时自动选择 LuaLaTeX。引擎选择统一由
         _preferred_engines 完成。
         """
+        self.target_language = "ja"
         return self.compile()
+
+    def _read_missing_cjk_glyphs(self, tex_file: str, out_dir: str) -> Dict[str, int]:
+        log_path = Path(out_dir) / f"{Path(tex_file).stem}.log"
+        try:
+            return find_missing_cjk_glyphs(log_path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            return {}
+
+    @staticmethod
+    def _describe_missing(missing: Dict[str, int], limit: int = 20) -> str:
+        sample = "".join(sorted(missing, key=missing.get, reverse=True)[:limit])
+        return f"{len(missing)} 种字符、共 {sum(missing.values())} 处（如：{sample}）"
+
+    def _ensure_cjk_glyphs(self, tex_file: str, out_dir: str, engine: str, pdf_path: str) -> Optional[str]:
+        """编译成功后检查 CJK 缺字；缺字时改用完整字体重编译。
+
+        原稿自带的 CJK 字体可能只是覆盖原文少量汉字的子集，XeTeX 会静默
+        丢弃子集外的字符，返回码仍为 0。改用完整字体后重编译失败时恢复
+        原稿并重新生成 PDF，确保不会因为修复而丢失可用结果。
+        """
+        missing = self._read_missing_cjk_glyphs(tex_file, out_dir)
+        if not missing:
+            return pdf_path
+        print(f"⚠️ 译文 PDF 缺少字形：{self._describe_missing(missing)}，改用完整 CJK 字体重新编译。")
+
+        tex_path = Path(tex_file)
+        try:
+            original_bytes = tex_path.read_bytes()
+            original = original_bytes.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            self.missing_glyphs = missing
+            return pdf_path
+        patched = add_cjk_font_fallback(original, self.target_language)
+        if patched != original:
+            tex_path.write_bytes(patched.encode("utf-8"))
+            fixed_pdf = self._compile_with_engine(tex_file, out_dir, engine)
+            if fixed_pdf:
+                pdf_path = fixed_pdf
+                missing = self._read_missing_cjk_glyphs(tex_file, out_dir)
+            else:
+                print("⚠️ 完整 CJK 字体编译失败，恢复原字体配置。")
+                tex_path.write_bytes(original_bytes)
+                pdf_path = self._compile_with_engine(tex_file, out_dir, engine)
+                if not pdf_path:
+                    return None
+                missing = self._read_missing_cjk_glyphs(tex_file, out_dir)
+                # 回退编译成功后，前一次失败不应作为本次编译的结果上报。
+                self.last_failure = None
+
+        self.missing_glyphs = missing
+        if missing:
+            print(f"⚠️ 最终 PDF 仍缺少字形：{self._describe_missing(missing)}。")
+        else:
+            print("✅ 已改用完整 CJK 字体，译文字形完整。")
+        return pdf_path
 
     def compile_source(self, pdf_dir: Optional[str]) -> Optional[str]:
         """将源文档编译到指定目录，并严格检查引擎返回码。"""

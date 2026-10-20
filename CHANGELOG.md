@@ -7,6 +7,7 @@ Upstream releases remain available at [NiuTrans/LaTeXTrans](https://github.com/N
 
 - Parse papers whose text contains literal LLM special tokens such as `<|endoftext|>`; token counting no longer raises tiktoken's disallowed-special-token error.
 - Keep chat-template tokens (`<|im_start|>`, `<|endoftext|>`, …) out of translation requests and restore them verbatim, so model servers cannot treat them as control tokens.
+- Detect CJK characters that XeLaTeX silently drops (`Missing character` in the log). When a template's own CJK font is a subset (e.g. arXiv 2610.19716 ships `NotoSansSC-Prompts.ttf`), recompile with the bundled Fandol fonts; restore the original source if that fails and warn about any glyphs still missing. Earlier compiled PDFs are recompiled on resume.
 - Count section tokens once instead of re-encoding merged text, and fall back to a character estimate when tiktoken or its vocabulary download is unavailable.
 
 ## 0.2.0 — 2026-10-07
