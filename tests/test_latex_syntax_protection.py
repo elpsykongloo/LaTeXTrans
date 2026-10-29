@@ -182,6 +182,48 @@ class LatexSyntaxProtectionTests(unittest.IsolatedAsyncioTestCase):
             "trans_content": r"我们实例化 \WL\ （图~\ref{fig:gate}）。",
         }))
 
+    def test_control_word_glued_to_translated_letters_gets_terminator(self):
+        source = r"\WL's gain and \WL{} again."
+        protection = protect_latex_syntax(source)
+        first, second = protection.token_order
+        translated = f"{first}的增益与{second}{{}}再次。"
+
+        self.assertEqual(protection.restore(translated), r"\WL 的增益与\WL{}再次。")
+
+    def test_validator_flags_bare_special_chars_added_in_prose_only(self):
+        validator = ValidatorAgent({}, project_dir="project", output_dir="output")
+        for source, translation in (
+            ("Q and A session.", "Q&A 环节。"),
+            (r"\textbf{50 percent} gain.", r"\textbf{50%} 增益。"),
+            ("Item No. 1 here.", "第 #1 项。"),
+            (r"the special\_token here", "这里的 special_token"),
+            ("x squared", "x^2"),
+        ):
+            with self.subTest(translation=translation):
+                self.assertIsNotNone(validator._validate_command({"content": source, "trans_content": translation}))
+        for source, translation in (
+            (r"Let $a_b^2$ hold, see \url{a_b#c}.", r"令 $a_b^2$ 成立，见 \url{a_b#c}。"),
+            (r"\begin{tabular}{cc} a & b \\ \end{tabular}", r"\begin{tabular}{cc} 甲 & 乙 \\ \end{tabular}"),
+            (r"\begin{align} x_1 &= y^2 \end{align} so", r"\begin{align} x_1 &= y^2 \end{align} 所以"),
+            (r"Up 50\% and R\&D.", r"增长 50\% 与研发（R\&D）。"),
+        ):
+            with self.subTest(translation=translation):
+                self.assertIsNone(validator._validate_command({"content": source, "trans_content": translation}))
+
+    def test_added_special_chars_are_escaped_only_when_absent_from_source(self):
+        from src.agents.tool_agents.validator_agent import escape_added_text_specials
+
+        self.assertEqual(
+            escape_added_text_specials(r"\textbf{50 percent} of Q and A, x squared",
+                                       r"\textbf{50%} 的 Q&A，x^2 与 a_b"),
+            r"\textbf{50\%} 的 Q\&A，x\textasciicircum{}2 与 a\_b",
+        )
+        table = r"\begin{tabular}{cc} Q and A & b \\ \end{tabular}"
+        self.assertEqual(
+            escape_added_text_specials(table, r"\begin{tabular}{cc} Q&A & 乙 \\ \end{tabular}"),
+            r"\begin{tabular}{cc} Q&A & 乙 \\ \end{tabular}",
+        )
+
     async def test_request_retries_after_structure_mismatch(self):
         source = r"\textbf{Best} and \textbf{Practice}."
         protection = protect_latex_syntax(source)

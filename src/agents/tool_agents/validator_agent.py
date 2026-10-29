@@ -37,6 +37,55 @@ _OPAQUE_MACROS = frozenset({
     "include", "includegraphics", "bibliography", "bibliographystyle",
 })
 
+# 正文中这些字符必须转义；模型自行写出的 50%、Q&A、#1、a_b、x^2 都会直接导致编译失败。
+_TEXT_SPECIAL_ESCAPES = {"&": r"\&", "%": r"\%", "#": r"\#", "_": r"\_", "^": r"\textasciicircum{}"}
+_DEFINITION_MACROS = frozenset({"newcommand", "renewcommand", "providecommand", "def", "gdef", "edef", "xdef"})
+
+
+def find_text_special_chars(latex_code: str) -> List[tuple]:
+    r"""返回公式、代码、引用和宏定义之外未转义的 ``& % # _ ^`` 位置及字符。"""
+    nodes, _, _ = LatexWalker(latex_code).get_latex_nodes()
+    found = []
+
+    def recurse(items):
+        for node in items or []:
+            name = node.__class__.__name__
+            if name == "LatexMathNode":
+                continue
+            if name == "LatexEnvironmentNode":
+                if node.environmentname not in LATEX_OPAQUE_ENVIRONMENTS | _MATH_ENVIRONMENTS:
+                    recurse(node.nodelist)
+            elif name == "LatexMacroNode":
+                if node.macroname in _OPAQUE_MACROS | _DEFINITION_MACROS | {"ensuremath"}:
+                    continue
+                if node.nodeargd:
+                    recurse(arg for arg in node.nodeargd.argnlist if arg is not None)
+            elif name == "LatexSpecialsNode":
+                if node.specials_chars == "&":
+                    found.append((node.pos, "&"))
+            elif name == "LatexCommentNode":
+                found.append((node.pos, "%"))
+            elif name == "LatexCharsNode":
+                found.extend((node.pos + i, char) for i, char in enumerate(node.chars) if char in "#_^")
+            elif getattr(node, "nodelist", None):
+                recurse(node.nodelist)
+
+    recurse(nodes)
+    return found
+
+
+def escape_added_text_specials(source: str, translation: str) -> str:
+    """原文正文中完全没有的特殊字符只可能是模型写出的标点，直接转义。"""
+    source_chars = {char for _, char in find_text_special_chars(source)}
+    while True:
+        added = [item for item in find_text_special_chars(translation) if item[1] not in source_chars]
+        if not added:
+            return translation
+        # 裸 % 会把同一行余下内容藏进注释，转义后需重新扫描。
+        for position, char in sorted(added, reverse=True):
+            translation = translation[:position] + _TEXT_SPECIAL_ESCAPES[char] + translation[position + 1:]
+
+
 base_dir = os.getcwd()
 sys.path.append(base_dir)
 
@@ -165,6 +214,7 @@ class ValidatorAgent(BaseToolAgent):
         trans = part.get("trans_content", "")
 
         try:
+            special_errors = self._special_char_errors(content, trans)
             src_symbols, trans_symbols = [], []
             if self.prose_equivalences:
                 content, src_symbols = self._normalize_prose_symbols(content)
@@ -180,11 +230,11 @@ class ValidatorAgent(BaseToolAgent):
         trans_sequence = trans_sequence + self.extract_math_delimiters(trans) + trans_symbols
         src_counter = Counter(src_sequence)
         trans_counter = Counter(trans_sequence)
-        if src_counter == trans_counter:
+        if src_counter == trans_counter and not special_errors:
             if self.extract_environment_sequence(src_sequence) == self.extract_environment_sequence(trans_sequence):
                 return None
 
-        errors = []
+        errors = list(special_errors)
         for elem, count in (src_counter - trans_counter).items():
             errors.append(
                 f"'{elem}' — expected {count + trans_counter.get(elem, 0)}, "
@@ -207,6 +257,18 @@ class ValidatorAgent(BaseToolAgent):
         if errors:
             return "LaTeX 命令翻译结果不一致：\n" + "\n".join(errors)
         return None        
+
+    @staticmethod
+    def _special_char_errors(content: str, trans: str) -> List[str]:
+        """只报告新增的未转义特殊字符；公式和代码已排除，减少的情况不会导致编译失败。"""
+        src_counter = Counter(char for _, char in find_text_special_chars(content))
+        trans_counter = Counter(char for _, char in find_text_special_chars(trans))
+        return [
+            f"正文中未转义的 '{char}' — source expected {src_counter[char]}, "
+            f"found {trans_counter[char]}（请写成 {_TEXT_SPECIAL_ESCAPES[char]}）"
+            for char in _TEXT_SPECIAL_ESCAPES
+            if trans_counter[char] > src_counter[char]
+        ]
 
     @staticmethod
     def _normalize_prose_symbols(latex_code: str) -> tuple:

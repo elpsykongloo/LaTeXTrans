@@ -980,6 +980,12 @@ class TranslatorAgent(BaseToolAgent):
             return None
 
         restored = protection.restore(result_text)
+        # 先转义模型写出的 50%、Q&A 等字符：裸 % 还会注释掉后面的 }，误报括号错误。
+        from src.agents.tool_agents.validator_agent import escape_added_text_specials
+        try:
+            restored = escape_added_text_specials(source_text, restored)
+        except Exception:
+            pass  # 解析失败时保持原样，交给独立校验。
         if not find_latex_bracket_errors(source_text):
             bracket_errors = find_latex_bracket_errors(restored)
             if bracket_errors:

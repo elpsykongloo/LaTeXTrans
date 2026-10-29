@@ -353,10 +353,16 @@ class LatexSyntaxProtection:
         if error:
             raise ValueError(error)
 
-        restored_middle = LATEX_PROTECTED_TOKEN_PATTERN.sub(
-            lambda match: self.replacements[match.group(0)],
-            translated_text,
-        )
+        def replace(match: re.Match) -> str:
+            replacement = self.replacements[match.group(0)]
+            # 模型常把控制词直接接上译文，如 ``\WL的``；XeTeX 把汉字也当作
+            # 字母，会读成未定义的 ``\WL的``。补一个空格终止命令名。
+            following = translated_text[match.end():match.end() + 1]
+            if following.isalpha() and re.search(r"\\[A-Za-z@]+$", replacement):
+                replacement += " "
+            return replacement
+
+        restored_middle = LATEX_PROTECTED_TOKEN_PATTERN.sub(replace, translated_text)
 
         # 尾部结构已由程序保管。如果模型仍根据系统提示自行
         # 补出了完全相同的尾部命令，先剔除回声，再追加权威原文。
