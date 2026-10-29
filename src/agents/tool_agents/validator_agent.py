@@ -23,6 +23,8 @@ _PROSE_UNICODE_SYMBOLS = {
     "∼": _PROSE_SYMBOL_COMMANDS["sim"],
     "…": _PROSE_SYMBOL_COMMANDS["ldots"],
 }
+# 原文中的纯文本 "..." 只是普通标点，译文可保留、改写为 "…"/"……" 或省略。
+_PLAIN_ELLIPSIS = "<plain-ellipsis>"
 _MATH_ENVIRONMENTS = frozenset({
     "math", "displaymath", "equation", "equation*", "align", "align*",
     "aligned", "alignat", "alignat*", "gather", "gather*", "gathered",
@@ -167,6 +169,7 @@ class ValidatorAgent(BaseToolAgent):
             if self.prose_equivalences:
                 content, src_symbols = self._normalize_prose_symbols(content)
                 trans, trans_symbols = self._normalize_prose_symbols(trans)
+                src_symbols, trans_symbols = self._reconcile_plain_ellipses(src_symbols, trans_symbols)
             src_sequence = self.extract_command_sequence(content)
             trans_sequence = self.extract_command_sequence(trans)
         except Exception as exc:
@@ -256,7 +259,13 @@ class ValidatorAgent(BaseToolAgent):
                     index = 0
                     while index < len(raw):
                         char = raw[index]
-                        if char in _PROSE_UNICODE_SYMBOLS:
+                        if raw.startswith("...", index):
+                            end = index + 3
+                            while end < len(raw) and raw[end] == ".":
+                                end += 1
+                            add(node.pos + index, node.pos + end, _PLAIN_ELLIPSIS)
+                            index = end
+                        elif char in _PROSE_UNICODE_SYMBOLS:
                             end = index + 1
                             if char == "…" and raw[index:end + 1] == "……":
                                 end += 1  # 中文六点省略号表示一个正文标点。
@@ -271,6 +280,17 @@ class ValidatorAgent(BaseToolAgent):
         for start, end in sorted(spans, reverse=True):
             latex_code = latex_code[:start] + " " + latex_code[end:]
         return latex_code, symbols
+
+    @staticmethod
+    def _reconcile_plain_ellipses(src_symbols: list, trans_symbols: list) -> tuple:
+        """原文每个纯文本 "..." 在译文中可对应 0 或 1 个省略号；命令形式的省略号仍严格计数。"""
+        ellipsis = _PROSE_SYMBOL_COMMANDS["ldots"]
+        optional = src_symbols.count(_PLAIN_ELLIPSIS)
+        src = [symbol for symbol in src_symbols if symbol != _PLAIN_ELLIPSIS]
+        trans = [ellipsis if symbol == _PLAIN_ELLIPSIS else symbol for symbol in trans_symbols]
+        surplus = trans.count(ellipsis) - src.count(ellipsis)
+        src.extend([ellipsis] * min(optional, max(0, surplus)))
+        return src, trans
 
     def _validate_placeholder(self, part :Dict[str, Any])-> Optional[str]:
         original_placeholders = self._extract_placeholder_sequence(part.get("content", ""))

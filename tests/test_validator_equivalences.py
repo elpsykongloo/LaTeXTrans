@@ -40,6 +40,27 @@ def test_equivalences_do_not_hide_math_or_symbol_loss(source, translation):
     assert _command_error(source, translation) is not None
 
 
+@pytest.mark.parametrize(("source", "translation"), [
+    ("``robotic ... customer care''", "``机器人式的……客服''"),
+    ("``robotic ... customer care''", "``机器人式的…客服''"),
+    ("``robotic ... customer care''", "``机器人式的...客服''"),
+    ("``not what people do ... when you talk''", "``不是人们交谈时会做的事''"),
+    (r"First ... second\ldots", "第一……第二…"),
+    (r"More\ldots later.", "稍后...继续。"),
+])
+def test_plain_text_ellipsis_may_be_localized_or_dropped(source, translation):
+    assert _command_error(source, translation) is None
+
+
+@pytest.mark.parametrize(("source", "translation"), [
+    ("Wait ...", "请稍等……然后……"),
+    (r"First ... second\ldots", "第一，第二。"),
+    ("Wait.", "请稍等……"),
+])
+def test_plain_text_ellipsis_does_not_hide_symbol_changes(source, translation):
+    assert _command_error(source, translation) is not None
+
+
 def test_strict_mode_preserves_command_comparison():
     assert _command_error(r"Wait\ldots", "请稍等…", validation_prose_equivalences=False)
 
