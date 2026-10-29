@@ -380,7 +380,9 @@ class ValidatorAgent(BaseToolAgent):
 
                     if macro_name in ignored_commands:
                         continue
-                    if len(macro_name) == 1 and not macro_name.isalpha():
+                    # 忽略 \%、\ 等 ASCII 控制符号；\（ 这类非 ASCII 控制符号
+                    # 几乎都是模型误写，必须计入，才能触发重译。
+                    if len(macro_name) == 1 and macro_name.isascii() and not macro_name.isalpha():
                         continue
 
                     command = f"\\{macro_name}"

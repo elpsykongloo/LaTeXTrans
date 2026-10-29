@@ -166,6 +166,22 @@ class LatexSyntaxProtectionTests(unittest.IsolatedAsyncioTestCase):
             "content": source, "trans_content": protection.restore(translated)
         }))
 
+    def test_control_space_is_protected_and_cjk_control_symbol_rejected(self):
+        source = r"We instantiate \WL\ (Figure~\ref{fig:gate})."
+        protection = protect_latex_syntax(source)
+
+        self.assertIn("\\ ", protection.replacements.values())
+        self.assertNotIn("\\", protection.protected_text)
+        validator = ValidatorAgent({}, project_dir="project", output_dir="output")
+        self.assertIsNotNone(validator._validate_command({
+            "content": source,
+            "trans_content": r"我们实例化 \WL\（图~\ref{fig:gate}）。",
+        }))
+        self.assertIsNone(validator._validate_command({
+            "content": source,
+            "trans_content": r"我们实例化 \WL\ （图~\ref{fig:gate}）。",
+        }))
+
     async def test_request_retries_after_structure_mismatch(self):
         source = r"\textbf{Best} and \textbf{Practice}."
         protection = protect_latex_syntax(source)

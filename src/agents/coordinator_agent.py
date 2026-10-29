@@ -176,22 +176,22 @@ class CoordinatorAgent:
                 checkpoint.begin(stage)
                 await translator().execute()
                 checkpoint.stage_completed(stage, snapshot=True)
-            if not restored or not checkpoint.is_complete("validate"):
-                stage = "validate"
-                checkpoint.begin(stage)
-                errors_report = validator_agent.execute()
-                MAX_RETRIES = 3
-                retry_count = 0
-                while errors_report and retry_count < MAX_RETRIES:
-                    checkpoint.invalidate_report(errors_report)
-                    retry_translator = translator()
-                    retry_translator.trans_mode = 1
-                    retry_translator.errors_report = errors_report
-                    await retry_translator.execute(error_retry_count=retry_count, Maxtry=MAX_RETRIES)
-                    errors_report = validator_agent.execute(errors_report)
-                    retry_count += 1
-                if not errors_report:
-                    checkpoint.stage_completed(stage, snapshot=True)
+            # 校验是本地计算、开销很小；续跑时也重新执行，使新增的校验规则能拦下旧译文。
+            stage = "validate"
+            checkpoint.begin(stage)
+            errors_report = validator_agent.execute()
+            MAX_RETRIES = 3
+            retry_count = 0
+            while errors_report and retry_count < MAX_RETRIES:
+                checkpoint.invalidate_report(errors_report)
+                retry_translator = translator()
+                retry_translator.trans_mode = 1
+                retry_translator.errors_report = errors_report
+                await retry_translator.execute(error_retry_count=retry_count, Maxtry=MAX_RETRIES)
+                errors_report = validator_agent.execute(errors_report)
+                retry_count += 1
+            if not errors_report:
+                checkpoint.stage_completed(stage, snapshot=True)
         except BaseException as exc:
             checkpoint.fail(stage, str(exc))
             raise

@@ -271,6 +271,20 @@ def test_missing_completed_pdf_or_compile_setting_recompiles_without_retranslati
     assert result.status == "success" and pdf.is_file()
 
 
+def test_resume_revalidates_saved_translation_before_compile(project):
+    source, output, config = project
+    _, pdf = _completed_checkpoint(project)
+    pdf.unlink()
+    error = {"part": "sec", "num_or_ph": "1", "error_type": "command", "error_message": "new rule"}
+    with mock.patch.object(coordinator_module.ValidatorAgent, "execute", return_value=[error]) as validate, \
+            mock.patch.object(coordinator_module, "TranslatorAgent") as translator, \
+            mock.patch.object(coordinator_module, "GeneratorAgent", side_effect=AssertionError("compile must not run")):
+        translator.return_value.execute = mock.AsyncMock()
+        result = CoordinatorAgent(config, str(source), str(output.parent)).workflow_latextrans()
+    assert result.status == "failed_validation"
+    assert validate.call_count == 4 and translator.return_value.execute.await_count == 3
+
+
 def test_failed_compile_does_not_mark_checkpoint_completed(project):
     source, output, config = project
     store, pdf = _completed_checkpoint(project)
