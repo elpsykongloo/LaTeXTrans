@@ -207,6 +207,19 @@ class CompilerDiagnosticsTests(unittest.TestCase):
                     self.assertEqual(errors[0]["line"], 3)
                     self.assertTrue(errors[0]["repairable"])
 
+    def test_undefined_control_sequence_names_the_exact_command(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            main = root / "main.tex"
+            main.write_text(SAMPLE, encoding="utf-8")
+            for point, command in ((r"实例化 \WL\（", r"\（"), (r"使用 \WL的", r"\WL的")):
+                with self.subTest(command=command):
+                    text = f"{main.as_posix()}:3: Undefined control sequence.\nl.3 ...{point}\n    图~\\ref{{fig}}\n"
+                    errors = extract_latex_errors(text, main, root)
+                    self.assertEqual(len(errors), 1)
+                    self.assertTrue(errors[0]["repairable"])
+                    self.assertIn(f"未定义的命令：{command}", errors[0]["message"])
+
     def test_ordinary_log_lines_cannot_be_joined_into_tex_paths(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

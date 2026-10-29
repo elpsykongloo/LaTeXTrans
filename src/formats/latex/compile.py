@@ -90,7 +90,22 @@ def extract_latex_errors(text: str, main_tex: Path, project_dir: Path) -> list[D
     errors = []
     lines = _join_wrapped_diagnostics(text.replace("\r", "").splitlines(), main_tex, project_dir)
 
-    def diagnostic(file: str, line: Optional[int], message: str):
+    def error_point(index: int, message: str) -> str:
+        # TeX 在 l.N 行恰好断在出错的记号之后；只给出 "Undefined control sequence."
+        # 时，修复模型会猜错是哪个命令（例如把 \WL\（ 误判成 \WL 未定义）。
+        for following in lines[index + 1:index + 12]:
+            at_line = re.match(r"l\.\d+\s*(.*)", following)
+            if at_line:
+                point = at_line[1].rstrip()
+                undefined = re.search(r"\\(?:[^\W\d_]|@)+$|\\.$", point)
+                if message.startswith("Undefined control sequence") and undefined:
+                    return f"\nTeX 出错位置：{point}\n未定义的命令：{undefined[0]}"
+                return f"\nTeX 出错位置：{point}" if point else ""
+            if following.startswith("! ") or file_line.match(following.strip()):
+                break
+        return ""
+
+    def diagnostic(file: str, line: Optional[int], message: str, detail: str = ""):
         candidate = Path(file.strip().strip('"'))
         if not candidate.is_absolute():
             candidate = main_tex.parent / candidate
@@ -104,7 +119,7 @@ def extract_latex_errors(text: str, main_tex: Path, project_dir: Path) -> list[D
         item = {
             "file": name,
             "line": line,
-            "message": message[:1200],
+            "message": (message + detail)[:1200],
             "environment_error": environment,
             "repairable": local and candidate.suffix.lower() == ".tex" and bool(line) and not environment,
         }
@@ -114,7 +129,7 @@ def extract_latex_errors(text: str, main_tex: Path, project_dir: Path) -> list[D
     for index, line in enumerate(lines):
         match = file_line.match(line.strip())
         if match and not re.search(r"\b(?:Warning|Info):|^(?:Overfull|Underfull)", match[3]):
-            diagnostic(match[1], int(match[2]), match[3])
+            diagnostic(match[1], int(match[2]), match[3], error_point(index, match[3]))
         elif line.startswith("! "):
             message = [line[2:].strip()]
             number = None
@@ -128,7 +143,7 @@ def extract_latex_errors(text: str, main_tex: Path, project_dir: Path) -> list[D
                 if following.strip():
                     message.append(following.strip())
             current_file = next((file for file in reversed(scopes) if file), str(main_tex))
-            diagnostic(current_file, number, "\n".join(message))
+            diagnostic(current_file, number, "\n".join(message), error_point(index, message[0]))
 
         # TeX 用括号标记输入文件的进入/退出；普通消息的括号也占据一个 scope。
         for token in re.finditer(r"\((\"[^\"\n]+\.(?:tex|sty|cls|bbl)\"|[^()\s]+\.(?:tex|sty|cls|bbl))?|\)", line):
