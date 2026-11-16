@@ -345,6 +345,21 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("summary", pm.caption_system_prompt_with_sum)
         self.assertTrue(system_prompt.startswith(pm.caption_system_prompt_with_sum))
 
+    async def test_context_title_falls_back_to_template_title_command(self):
+        agent = _agent({"use_context": True})
+        session = _FakeSession(default=_identity)
+        captions = [
+            {"placeholder": "<PLACEHOLDER_CAP_1>", "cap_type": "icmltitlerunning",
+             "content": "\\icmltitlerunning{Critics}"},
+            {"placeholder": "<PLACEHOLDER_CAP_2>", "cap_type": "shorttitle",
+             "content": "\\shorttitle{Critics}"},
+            {"placeholder": "<PLACEHOLDER_CAP_3>", "cap_type": "icmltitle",
+             "content": "\\icmltitle{Stable Critic Training}"},
+            self.captions[1],
+        ]
+        await agent._prepare_context(self.sections, self.envs, captions, session)
+        self.assertEqual(agent._paper_title, "Stable Critic Training")
+
     async def test_context_summary_is_generated_once(self):
         agent = _agent({"use_context": "true", "context_summary": "true"})
         session = _FakeSession(["LLM generated summary."], default=_identity)

@@ -2,9 +2,39 @@ from functools import lru_cache
 from typing import Any, Dict, Optional
 from .utils import *
 import math
+import re
 import sys
 
 from src.utils.progress import st
+
+
+# 模板常把显示的标题放进自定义命令（\icmltitle、\kztitle、\subtitle、
+# \shorttitle、\frametitle 等），\title 反而不显示。名字以 title 结尾、
+# 带花括号参数的命令都按标题文字提取；\maketitle 类排版命令和 titling 宏包的
+# \pretitle/\posttitle 只含格式代码，不提取。这里只能用非捕获结构，
+# 花括号匹配依赖固定的分组编号。
+TITLE_COMMAND_NAME = (
+    r"(?![A-Za-z]*maketitle(?![A-Za-z]))"
+    r"(?!(?:pre|post)title(?![A-Za-z]))"
+    r"[A-Za-z]*title"
+)
+CAPTION_COMMAND_NAME = (
+    r"caption|caption\*|subcaption|subcaption\*|keywords|abstract"
+    r"|icmltitlerunning|titlerunning|" + TITLE_COMMAND_NAME
+)
+_MACRO_DEFINITION_PREFIX = re.compile(
+    r"\\(?:(?:re)?newcommand|providecommand|DeclareRobustCommand|[egx]?def)"
+    r"\*?[ \t]*\{?[ \t]*$"
+)
+
+
+def _is_parameterized_macro_definition(tex: str, match) -> bool:
+    r"""``\newcommand\subtitle[1]{\gdef\@subtitle{#1}}`` 定义的是命令本身，
+    其花括号是带参数的实现代码而不是标题文字。"""
+    return bool(
+        _MACRO_DEFINITION_PREFIX.search(tex[max(0, match.start() - 80):match.start()])
+        and re.search(r"(?<!\\)#", match.group(0))
+    )
 
 
 @lru_cache(maxsize=1)
@@ -334,17 +364,21 @@ class LatexParser:
         The captions are replaced with placeholders in the full tex.
         """
         full_tex = self._freeze_opaque_content(remove_comments(tex))
-        command_name = r'caption|caption\*|subcaption|subcaption\*|title|keywords|abstract|icmltitle|icmltitlerunning'
-        pattern_caption = get_command_pattern(command_name) # \caption{...} or \caption*{...} or \caption[...]{...}
+        pattern_caption = get_command_pattern(CAPTION_COMMAND_NAME) # \caption{...} or \caption*{...} or \caption[...]{...}
         pattern_captionof = get_captionof_pattern()
 
+        position = 0
         while True:
-            result = pattern_caption.search(full_tex)
+            result = pattern_caption.search(full_tex, position)
             if result is None:
                 break
+            if _is_parameterized_macro_definition(full_tex, result):
+                position = result.end()
+                continue
             self.caption_count += 1
             placeholder = f"<PLACEHOLDER_CAP_{self.caption_count}>"
-            full_tex = full_tex.replace(result.group(0), placeholder, 1)
+            full_tex = full_tex[:result.start()] + placeholder + full_tex[result.end():]
+            position = result.start() + len(placeholder)
             self.captions_json.append({
                 "placeholder": placeholder,
                 "cap_type":result.group(1),

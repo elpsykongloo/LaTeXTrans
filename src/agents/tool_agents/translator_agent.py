@@ -1228,10 +1228,20 @@ class TranslatorAgent(BaseToolAgent):
             return
         self._context_ready = True
 
+        # \title 优先；没有时退回 \icmltitle、\kztitle 等模板自定义的正标题，
+        # 跳过副标题、页眉短标题和 beamer 帧标题。
+        title_candidates = [
+            c for c in captions
+            if str(c.get("cap_type", "")).endswith("title")
+            and not re.match(r"(?:sub|short|running|frame|framesub)title$", str(c.get("cap_type", "")))
+        ]
         title_tex = next(
-            (c.get("content", "") for c in captions if c.get("cap_type") == "title"), ""
+            (c.get("content", "") for c in title_candidates if c.get("cap_type") == "title"),
+            title_candidates[0].get("content", "") if title_candidates else "",
         )
-        title_match = re.match(r"\s*\\title\*?\s*(?:\[[^\]]*\])?\s*\{(.*)\}\s*$", title_tex, re.DOTALL)
+        title_match = re.match(
+            r"\s*\\[A-Za-z]*title\*?\s*(?:\[[^\]]*\])?\s*\{(.*)\}\s*$", title_tex, re.DOTALL
+        )
         self._paper_title = self._plain_text(
             title_match.group(1) if title_match else title_tex, 300
         )

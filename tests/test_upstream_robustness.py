@@ -249,6 +249,43 @@ def test_captionof_two_distinct_arguments_are_extracted_and_type_is_protected(so
     assert "text" in protection.protected_text or "Long" in protection.protected_text
 
 
+def test_template_title_commands_are_extracted_but_layout_and_definitions_are_not():
+    # arXiv 2611.16933 只显示 \kztitle，\title 不会出现在 PDF 中。
+    visible = [
+        r"\kztitle{\kezek{}: Splitting Mono Tracks\\ into Per-Speaker Tracks}",
+        r"\icmltitle{Stable Critic Training}",
+        r"\subtitle{A Second Line}",
+        r"\shorttitle{Short}",
+        r"\frametitle{Results}",
+        r"\titlerunning{Running Head}",
+        r"\newcommand\papertitle{Some Title}",
+    ]
+    untouched = [
+        r"\kzmaketitle",
+        r"\maketitle {}",
+        r"\pretitle{\begin{center}\LARGE}",
+        r"\posttitle{\par\end{center}}",
+        r"\titleformat{\section}{\large}{\thesection}{1em}{}",
+        r"\newcommand\subtitle[1]{\gdef\@subtitle{#1}}",
+        r"\renewcommand*{\kztitle}[1]{\def\@kztitle{#1}}",
+    ]
+    parser = LatexParser("", "")
+    result = parser._extract_captions("\n".join(visible + untouched))
+
+    contents = [caption["content"] for caption in parser.captions_json]
+    assert contents == [
+        visible[0], visible[1], visible[2], visible[3], visible[4], visible[5],
+        r"\papertitle{Some Title}",
+    ]
+    assert [caption["cap_type"] for caption in parser.captions_json] == [
+        "kztitle", "icmltitle", "subtitle", "shorttitle", "frametitle",
+        "titlerunning", "papertitle",
+    ]
+    for line in untouched:
+        assert line in result
+    assert r"\newcommand<PLACEHOLDER_CAP_7>" in result
+
+
 def test_author_thanks_and_visible_commands_in_macros_translate_without_names(tmp_path):
     source = (
         "\\documentclass{article}\n"
