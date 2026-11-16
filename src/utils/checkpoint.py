@@ -130,14 +130,16 @@ def build_metadata(project_dir: str, config: Dict[str, Any], previous: Optional[
     return {"project_dir": str(project), "sources": sources, "translation": translation, "term_files": terms}
 
 
-COMPILE_CHECKS_VERSION = "cjk-glyphs-1"
+COMPILE_CHECKS_VERSION = "caption-edge-breaks-2"
 
 
 def compile_metadata(config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "compile_repair": _enabled(config.get("compile_repair", True)),
         "compile_repair_attempts": config.get("compile_repair_attempts", 2),
-        # 编译检查规则变化时让旧 PDF 失效（cjk-glyphs-1：检查并修复 CJK 缺字）。
+        # 重建或编译检查规则变化时让旧 PDF 失效，续跑时只重新生成，不重新翻译
+        # （cjk-glyphs-1：检查并修复 CJK 缺字；caption-edge-breaks-2：去掉
+        # 标题/图注首尾多余换行，XeLaTeX 下关闭 microtype expansion）。
         "compile_checks": COMPILE_CHECKS_VERSION,
         **{key: value for key, value in config.items() if key.startswith("compiler_")},
     }

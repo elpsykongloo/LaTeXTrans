@@ -349,6 +349,24 @@ def test_title_translates_normally_but_invalid_command_falls_back_to_source():
     assert _recover_caption_trans(captionof, r"\captionof{图}{译文}") == captionof
 
 
+@pytest.mark.parametrize("source, translated, expected", [
+    # arXiv 2611.16933：原文中间的换行被模型挪到了标题末尾。
+    (r"\kztitle{A\\ B}", "\\kztitle{\\kezek{}：甲\n乙\\\\}", "\\kztitle{\\kezek{}：甲\n乙}"),
+    (r"\caption{Overview.}", r"\caption{\\ 概览。}", r"\caption{概览。}"),
+    (r"\title[S]{Long title}", r"\title[短]{长标题 \\[2pt]}", r"\title[短]{长标题}"),
+    (r"\captionof{figure}{Text}", r"\captionof{figure}{图\newline}", r"\captionof{figure}{图}"),
+    (r"\caption{A}", "```latex\n\\caption{图\\\\ \\\\*}\n```", r"\caption{图}"),
+    # 中间换行、原文本来就有的首尾换行、只剩换行的参数都保持不变。
+    (r"\kztitle{A\\ B}", r"\kztitle{甲\\ 乙}", r"\kztitle{甲\\ 乙}"),
+    (r"\title{A\\}", r"\title{甲\\}", r"\title{甲\\}"),
+    (r"\caption{\\A}", r"\caption{\\甲}", r"\caption{\\甲}"),
+    (r"\caption{A}", r"\caption{\\}", r"\caption{\\}"),
+    (r"\caption{A}", r"\caption{100\%\\}", r"\caption{100\%}"),
+])
+def test_caption_recovery_drops_line_breaks_moved_to_argument_edges(source, translated, expected):
+    assert _recover_caption_trans(source, translated) == expected
+
+
 @pytest.mark.parametrize("language", ["Chinese", "Japanese"])
 def test_package_and_reference_repairs_preserve_code_examples(language):
     code = (

@@ -22,6 +22,47 @@ def _strip_md_wrap(text: str) -> str:
     return text
 
 
+def _brace_arguments(text: str, index: int, required_groups: int):
+    """跳过可选参数，返回命令名之后前 ``required_groups`` 个花括号参数的
+    ``(start, end)``（含花括号）以及解析结束的位置。"""
+    spans = []
+    while len(spans) < required_groups:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text) or text[index] not in "[{":
+            break
+        opening = text[index]
+        end = _find_balanced_group_end(
+            text, index, opening, "]" if opening == "[" else "}"
+        )
+        if end is None:
+            break
+        if opening == "{":
+            spans.append((index, end))
+        index = end
+    return spans, index
+
+
+_LINE_BREAK = r"(?:\\\\\*?(?:\s*\[[^\[\]]*\])?|\\newline(?![A-Za-z@]))"
+_LEADING_LINE_BREAKS = re.compile(rf"^(?:\s*{_LINE_BREAK})+\s*")
+_TRAILING_LINE_BREAKS = re.compile(rf"(?<!\\)(?:\s*{_LINE_BREAK})+\s*$")
+
+
+def _drop_added_edge_line_breaks(source_argument: str, argument: str) -> str:
+    r"""去掉模型挪到标题/图注参数首尾的换行。
+
+    原文 ``\kztitle{A\\ B}`` 常被译成 ``\kztitle{甲乙\\}``：末尾换行只会在
+    标题下多出空行，开头的 ``\\`` 在竖直模式下还会报 "There's no line here
+    to end"。原文同一位置本来就有换行时保持不变；中间的换行原样保留。
+    """
+    result = argument
+    if not _LEADING_LINE_BREAKS.match(source_argument):
+        result = _LEADING_LINE_BREAKS.sub("", result, count=1)
+    if not _TRAILING_LINE_BREAKS.search(source_argument):
+        result = _TRAILING_LINE_BREAKS.sub("", result, count=1)
+    return result if result.strip() else argument
+
+
 def _recover_caption_trans(content: str, trans_content: str) -> str:
     """从模型说明中恢复同名完整命令；不可恢复时保留原文。"""
     text = _strip_md_wrap(trans_content or "")
@@ -42,31 +83,29 @@ def _recover_caption_trans(content: str, trans_content: str) -> str:
         match = boundary.search(text, position)
         if match is None:
             break
-        index = match.end()
-        groups = []
-        while len(groups) < required_groups:
-            while index < len(text) and text[index].isspace():
-                index += 1
-            if index >= len(text) or text[index] not in "[{":
-                break
-            opening = text[index]
-            end = _find_balanced_group_end(
-                text, index, opening, "]" if opening == "[" else "}"
-            )
-            if end is None:
-                break
-            if opening == "{":
-                groups.append(text[index + 1:end - 1])
-            index = end
+        spans, index = _brace_arguments(text, match.end(), required_groups)
+        groups = [text[start + 1:end - 1] for start, end in spans]
         if (
             len(groups) == required_groups and groups[-1].strip()
             and (source_type is None or groups[0].strip() == source_type)
         ):
-            best = text[match.start():index]
+            best = (match.start(), index, spans[-1])
             position = index
         else:
             position = match.end()
-    return best if best is not None else content
+    if best is None:
+        return content
+
+    start, end, (argument_start, argument_end) = best
+    source_spans, _ = _brace_arguments(content, source.end(), required_groups)
+    if len(source_spans) != required_groups:
+        return text[start:end]
+    source_start, source_end = source_spans[-1]
+    argument = _drop_added_edge_line_breaks(
+        content[source_start + 1:source_end - 1],
+        text[argument_start + 1:argument_end - 1],
+    )
+    return text[start:argument_start + 1] + argument + text[argument_end - 1:end]
 
 class LatexConstructor:
     def __init__(self, 
