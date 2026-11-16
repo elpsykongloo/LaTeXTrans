@@ -1,4 +1,5 @@
 import dataclasses
+import filecmp
 import json
 import os
 import re
@@ -215,6 +216,8 @@ class CoordinatorAgent:
             return result(STATUS_FAILED_VALIDATION, message, usage=usage)
 
         checkpoint.begin("compile")
+        # 生成会覆盖上次的译文 PDF，必须先判断上次的下载目录副本是否未被改动。
+        previous_copy = self._unmodified_downloads_copy(checkpoint.previous_outcome)
         generator_agent = GeneratorAgent(config=self.config,
                                          project_dir=self.project_dir,
                                          output_dir=transed_project_dir)
@@ -241,6 +244,7 @@ class CoordinatorAgent:
                 pdf_path=new_PDF_path,
                 translated_latex_dir=os.path.join(transed_project_dir, base_name),
                 fallback_name=f"{self.target_language}_{base_name}",
+                previous_copy=previous_copy,
             )
             if titled_copy_path:
                 print(f"🤖📄 {self.name}: Copied titled PDF to {titled_copy_path}.")
@@ -307,9 +311,14 @@ class CoordinatorAgent:
         pdf_path: str,
         translated_latex_dir: str,
         fallback_name: str,
+        previous_copy: Optional[Path] = None,
     ) -> Optional[str]:
         """
         将译文 PDF 额外复制到用户下载目录，并使用译文标题作为文件名。
+
+        同名文件内容相同则直接复用；``previous_copy`` 是上次为本篇复制且未被
+        改动过的文件，标题未变时原地更新它，避免续跑一次就多一份 ``_1``。
+        其它同名文件一律不覆盖。
         """
         try:
             title = self._extract_translated_title(translated_latex_dir) or fallback_name
@@ -319,12 +328,41 @@ class CoordinatorAgent:
 
             downloads_dir = self.downloads_dir
             downloads_dir.mkdir(parents=True, exist_ok=True)
-            target_path = self._unique_pdf_path(downloads_dir / f"{filename}.pdf")
+            target_path = downloads_dir / f"{filename}.pdf"
+            if target_path.is_file() and filecmp.cmp(pdf_path, target_path, shallow=False):
+                return str(target_path)
+            if (
+                previous_copy is not None
+                and previous_copy.parent == downloads_dir.resolve()
+                and re.fullmatch(re.escape(filename) + r"(?:_\d+)?\.pdf", previous_copy.name)
+            ):
+                try:
+                    shutil.copy2(pdf_path, previous_copy)
+                    return str(previous_copy)
+                except OSError as exc:  # 例如 PDF 正在阅读器中打开
+                    print(f"🤖⚠️ {self.name}: 无法更新 {previous_copy}，改为另存：{exc}")
+            target_path = self._unique_pdf_path(target_path)
             shutil.copy2(pdf_path, target_path)
             return str(target_path)
         except Exception as e:
             print(f"🤖⚠️ {self.name}: Failed to copy titled PDF to Downloads: {e}")
             return None
+
+    @staticmethod
+    def _unmodified_downloads_copy(outcome: Optional[Dict[str, Any]]) -> Optional[Path]:
+        """上次复制到下载目录、且内容仍与上次译文 PDF 完全相同的文件。"""
+        if not isinstance(outcome, dict):
+            return None
+        copy_path, pdf_path = outcome.get("downloads_path"), outcome.get("pdf_path")
+        if not isinstance(copy_path, (str, os.PathLike)) or not isinstance(pdf_path, (str, os.PathLike)):
+            return None
+        try:
+            copy_path, pdf_path = Path(copy_path), Path(pdf_path)
+            if copy_path.is_file() and pdf_path.is_file() and filecmp.cmp(copy_path, pdf_path, shallow=False):
+                return copy_path.resolve()
+        except OSError:
+            pass
+        return None
 
     def _extract_translated_title(self, translated_latex_dir: str) -> str:
         """

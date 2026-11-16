@@ -271,6 +271,56 @@ def test_missing_completed_pdf_or_compile_setting_recompiles_without_retranslati
     assert result.status == "success" and pdf.is_file()
 
 
+@pytest.mark.parametrize("edited", [False, True])
+def test_regeneration_updates_its_unmodified_downloads_copy_in_place(project, tmp_path, edited):
+    source, output, config = project
+    store, pdf = _completed_checkpoint(project)
+    (output / "paper").mkdir()
+    (output / "paper" / "main.tex").write_text(
+        r"\documentclass{article}\title{译文标题}\begin{document}\end{document}", encoding="utf-8"
+    )
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    unrelated = downloads / "译文标题.pdf"
+    unrelated.write_bytes(b"%PDF-1.4 another paper")
+    previous_copy = downloads / "译文标题_1.pdf"
+    previous_copy.write_bytes(b"%PDF-1.4 annotated" if edited else pdf.read_bytes())
+    store.complete({
+        "status": "success", "pdf_path": str(pdf), "project_name": "paper",
+        "output_dir": str(output), "downloads_path": str(previous_copy),
+    })
+    config.update(copy_to_downloads=True, downloads_dir=str(downloads), compile_repair=False)
+    config["llm_config"]["api_key"] = ""
+    generated = output.parent / "generated.pdf"
+    generated.write_bytes(b"%PDF-1.4 regenerated")
+    with mock.patch.object(coordinator_module, "GeneratorAgent") as generator:
+        generator.return_value.execute.return_value = str(generated)
+        result = CoordinatorAgent(config, str(source), str(output.parent)).workflow_latextrans()
+
+    assert result.status == "success"
+    assert unrelated.read_bytes() == b"%PDF-1.4 another paper"
+    if edited:
+        assert previous_copy.read_bytes() == b"%PDF-1.4 annotated"
+        assert Path(result.downloads_path) == downloads / "译文标题_2.pdf"
+    else:
+        assert Path(result.downloads_path) == previous_copy.resolve()
+        assert sorted(path.name for path in downloads.iterdir()) == ["译文标题.pdf", "译文标题_1.pdf"]
+    assert Path(result.downloads_path).read_bytes() == b"%PDF-1.4 regenerated"
+
+
+def test_completed_reuse_does_not_duplicate_identical_downloads_copy(project, tmp_path):
+    source, output, config = project
+    _, pdf = _completed_checkpoint(project)
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    existing = downloads / "ch_paper.pdf"
+    existing.write_bytes(pdf.read_bytes())
+    config.update(copy_to_downloads=True, downloads_dir=str(downloads))
+    result = CoordinatorAgent(config, str(source), str(output.parent)).workflow_latextrans()
+    assert result.resumed and Path(result.downloads_path) == existing
+    assert [path.name for path in downloads.iterdir()] == ["ch_paper.pdf"]
+
+
 def test_resume_revalidates_saved_translation_before_compile(project):
     source, output, config = project
     _, pdf = _completed_checkpoint(project)

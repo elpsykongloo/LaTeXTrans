@@ -158,6 +158,9 @@ class CheckpointStore:
             or ("bilingual" in old and not isinstance(old["bilingual"], dict))
         ):
             old = {}
+        # 上次运行的结果即使因 --force 或源文件变化而失效，也用于识别并原地
+        # 更新上次复制到下载目录的 PDF。
+        self.previous_outcome = dict(old.get("outcome") or {})
         self.metadata = build_metadata(project_dir, config, old.get("metadata"), self.output_dir)
         self.compile_settings = compile_metadata(config)
         self.valid = (
