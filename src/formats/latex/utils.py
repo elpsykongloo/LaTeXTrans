@@ -2087,8 +2087,15 @@ def _add_xecjk_support(latex_code: str, cjk_font_lines: Optional[List[str]] = No
         # PassOptionsToPackage 此时已经来不及生效。XeLaTeX 处理模板自带的
         # Type1 字体时，microtype 的 XeTeXglyph 路径会直接触发编译错误，
         # 因此在宏包已加载时关闭全部微排版功能。
+        # 更常见的是导言区或本地 .sty 之后才以 expansion=true 加载
+        # microtype：XeTeX 不支持字体扩展，该显式选项会在 \begin{document}
+        # 触发致命错误。此时只在加载后关闭 expansion，保留可用的 protrusion。
         r"\ifcsname microtypesetup\endcsname",
         r"\microtypesetup{activate=false}",
+        r"\else",
+        r"\ifcsname AddToHook\endcsname",
+        r"\AddToHook{package/microtype/after}{\microtypesetup{expansion=false}}",
+        r"\fi",
         r"\fi",
     ]
     if not has_xecjk:

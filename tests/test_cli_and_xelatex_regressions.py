@@ -1,5 +1,7 @@
 import contextlib
 import io
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,6 +117,55 @@ class CliAndXeLaTeXRegressionTests(unittest.TestCase):
 
         self.assertIn(r"\usepackage{xeCJK}", translated)
         self.assertNotRegex(translated, r"(?m)^[ \t]*\\pdfoutput\s*=")
+
+    def test_disables_microtype_expansion_when_loaded_after_preamble_block(self):
+        source = (
+            "\\documentclass{article}\n"
+            "\\usepackage[protrusion=true,expansion=true]{microtype}\n"
+            r"\begin{document}中文\end{document}"
+        )
+
+        translated = add_chinese_package(source)
+
+        hook = r"\AddToHook{package/microtype/after}{\microtypesetup{expansion=false}}"
+        self.assertIn(hook, translated)
+        self.assertLess(
+            translated.index(hook),
+            translated.index(r"\usepackage[protrusion=true,expansion=true]{microtype}"),
+        )
+
+    @unittest.skipUnless(shutil.which("xelatex"), "XeLaTeX is unavailable")
+    def test_xelatex_compiles_local_style_requesting_microtype_expansion(self):
+        # arXiv 2611.16933: kezek.sty 以 expansion=true 加载 microtype，
+        # XeTeX 在 \begin{document} 报 "Font expansion does not work with xetex"。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "paperstyle.sty").write_text(
+                "\\RequirePackage[protrusion=true,expansion=true]{microtype}\n",
+                encoding="utf-8",
+            )
+            source = (
+                "\\documentclass{article}\n"
+                "\\usepackage{paperstyle}\n"
+                "\\begin{document}\n中文 text.\n\\end{document}\n"
+            )
+            (root / "main.tex").write_text(add_chinese_package(source), encoding="utf-8")
+
+            completed = subprocess.run(
+                ["xelatex", "-interaction=nonstopmode", "-halt-on-error", "-no-pdf", "main.tex"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdin=subprocess.DEVNULL,
+                timeout=300,
+            )
+
+            log = (root / "main.log").read_text(encoding="utf-8", errors="replace")
+            self.assertEqual(completed.returncode, 0, log[-2000:])
+            self.assertNotIn("Font expansion does not work with xetex", log)
+            self.assertIn("Character protrusion enabled", log)
 
     def test_removes_directive_even_when_ctex_already_exists(self):
         source = (
