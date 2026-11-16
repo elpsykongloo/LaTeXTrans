@@ -14,6 +14,7 @@ from src.formats.latex.utils import (
     LATEX_PROSE_ENVIRONMENTS,
     MAIN_TEX_MARKER,
     add_target_language_package,
+    extract_title,
     find_latex_bracket_errors,
     find_main_tex_file,
     get_captionof_pattern,
@@ -365,6 +366,16 @@ def test_title_translates_normally_but_invalid_command_falls_back_to_source():
 ])
 def test_caption_recovery_drops_line_breaks_moved_to_argument_edges(source, translated, expected):
     assert _recover_caption_trans(source, translated) == expected
+
+
+def test_extract_title_prefers_title_then_template_main_title():
+    assert extract_title("% \\title{Old}\n\\title [Short] {New \\textbf{Title}}") == r"New \textbf{Title}"
+    assert extract_title(
+        "\\newcommand{\\displaytitle}[1]{\\title{Paper #1}}\n"
+        "\\title{}\n\\icmltitlerunning{Run}\n\\shorttitle{S}\n\\icmltitle{Real Title}"
+    ) == "Real Title"
+    assert extract_title(r"\subtitle{Sub}\kztitle{Kezek：拆分}\title{Main}") == "Main"
+    assert extract_title(r"\maketitle\frametitle{Frame}") == "No title"
 
 
 @pytest.mark.parametrize("language", ["Chinese", "Japanese"])

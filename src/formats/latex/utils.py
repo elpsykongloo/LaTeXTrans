@@ -29,6 +29,28 @@ options = r"\[[^\[\]]*?\]"
 spaces = r"[ \t]*"
 get_pattern_brace = lambda index: rf"\{{((?:[^{{}}\\]++|\\[\s\S]|(?{index}))*+)\}}"
 
+# 模板常把显示的标题放进自定义命令（\icmltitle、\kztitle、\subtitle、
+# \shorttitle、\frametitle 等），\title 反而不显示。名字以 title 结尾、
+# 带花括号参数的命令都按标题文字处理；\maketitle 类排版命令和 titling 宏包的
+# \pretitle/\posttitle 只含格式代码。只能用非捕获结构：命令正则的花括号
+# 匹配依赖固定的分组编号。
+TITLE_COMMAND_NAME = (
+    r"(?![A-Za-z]*maketitle(?![A-Za-z]))"
+    r"(?!(?:pre|post)title(?![A-Za-z]))"
+    r"[A-Za-z]*title"
+)
+_SECONDARY_TITLE_COMMAND = re.compile(r"(?:sub|short|running|head|header|toc|frame|framesub)title")
+
+
+def is_main_title_command(name: str) -> bool:
+    r"""``\title``、``\icmltitle``、``\kztitle`` 等论文主标题命令；副标题、
+    页眉短标题、目录标题和 beamer 帧标题不算。"""
+    name = (name or "").rstrip("*")
+    return bool(
+        re.fullmatch(TITLE_COMMAND_NAME, name)
+        and not _SECONDARY_TITLE_COMMAND.fullmatch(name)
+    )
+
 # 翻译过程中使用的结构占位符。占位符本身不能被模型翻译、增删或跨片段复制。
 LATEX_PLACEHOLDER_PATTERN = re.compile(r"<PLACEHOLDER_[^>]+>")
 
@@ -1014,26 +1036,20 @@ def extract_structure(nodes, depth=0):
     return structure
 
 def extract_title(latex_code):
-    title_start = latex_code.find(r"\title{")
-    if title_start == -1:
-        title_start = latex_code.find(r"\title[")
-    if title_start == -1:
-        return "No title"  
-    
-    brace_start = latex_code.find("{", title_start)
-    if brace_start == -1:
-        return "No title"  
-    
-    stack = []  
-    for i in range(brace_start, len(latex_code)):
-        if latex_code[i] == "{":
-            stack.append(i)  
-        elif latex_code[i] == "}":
-            stack.pop()  
-            if not stack:  
-                return latex_code[brace_start + 1:i].strip()
+    r"""返回论文主标题的参数源码，找不到时返回 ``"No title"``。
 
-    return "No title"  
+    优先使用非空的 ``\title``；模板只用 ``\icmltitle``、``\kztitle`` 等
+    自定义命令时退回第一个此类主标题。注释和带 ``#1`` 参数的宏定义不算。
+    """
+    fallback = None
+    for match in get_command_pattern(TITLE_COMMAND_NAME).finditer(remove_comments(latex_code or "")):
+        name, title = match.group(1), match.group(4).strip()
+        if not title or not is_main_title_command(name) or re.search(r"(?<!\\)#", title):
+            continue
+        if name == "title":
+            return title
+        fallback = fallback or title
+    return fallback or "No title"
 
 def extract_abstract(latex_code):
     abstract_pattern = regex.compile(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", regex.DOTALL)

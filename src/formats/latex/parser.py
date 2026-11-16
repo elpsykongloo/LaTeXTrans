@@ -8,16 +8,7 @@ import sys
 from src.utils.progress import st
 
 
-# 模板常把显示的标题放进自定义命令（\icmltitle、\kztitle、\subtitle、
-# \shorttitle、\frametitle 等），\title 反而不显示。名字以 title 结尾、
-# 带花括号参数的命令都按标题文字提取；\maketitle 类排版命令和 titling 宏包的
-# \pretitle/\posttitle 只含格式代码，不提取。这里只能用非捕获结构，
-# 花括号匹配依赖固定的分组编号。
-TITLE_COMMAND_NAME = (
-    r"(?![A-Za-z]*maketitle(?![A-Za-z]))"
-    r"(?!(?:pre|post)title(?![A-Za-z]))"
-    r"[A-Za-z]*title"
-)
+# 标题类命令的范围见 utils.TITLE_COMMAND_NAME。
 CAPTION_COMMAND_NAME = (
     r"caption|caption\*|subcaption|subcaption\*|keywords|abstract"
     r"|icmltitlerunning|titlerunning|" + TITLE_COMMAND_NAME
