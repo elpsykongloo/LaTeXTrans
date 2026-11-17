@@ -159,6 +159,17 @@ class RepairTests(unittest.TestCase):
         self.assertNotIn("documentclass", json.dumps(context))
         self.assertLess(len(json.dumps(context)), self.agent.MAX_CONTEXT_CHARS)
 
+    def test_error_at_environment_end_also_shows_its_begin_line(self):
+        lines = ["\\documentclass{article}", "\\begin{document}", "\\begin{adjustbox}{最大宽度=\\textwidth}"]
+        lines += ["\\begin{adjustbox}{center}x\\end{adjustbox}"] + ["A & B \\\\" for _ in range(40)] + ["\\end{adjustbox}", "\\end{document}"]
+        (self.generated / "main.tex").write_text("\n".join(lines), encoding="utf-8")
+        compiler = FakeCompiler(self.generated)
+        compiler.last_failure = failure_for(self.generated, line=45, message="Package xkeyval Error: `最大宽度' undefined in families `adjbox'.")
+        contexts = self.agent._build_context(compiler)["contexts"]
+        self.assertEqual(len(contexts), 2)
+        self.assertTrue(any(item["start_line"] <= 3 <= item["end_line"] for item in contexts))
+        self.agent._validate_edits([edit(old=lines[2], new="\\begin{adjustbox}{max width=\\textwidth}", line=3)], contexts)
+
     def test_patch_cannot_change_unseen_lines_or_import_dependencies(self):
         contexts = self.agent._build_context(FakeCompiler(self.generated))["contexts"]
         for patch in (edit(line=100), edit(new=r"\input{../../secret}"), edit(new=r"\csname input\endcsname{../../secret}"), edit(new=""), edit(new="% removed paragraph"), edit(old="wrong line")):

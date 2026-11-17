@@ -4,7 +4,7 @@ from src.agents.tool_agents.base_tool_agent import BaseToolAgent
 from pathlib import Path
 from collections import Counter
 from pylatexenc.latexwalker import LatexWalker
-from src.formats.latex.utils import find_latex_bracket_errors, LATEX_OPAQUE_ENVIRONMENTS
+from src.formats.latex.utils import find_latex_bracket_errors, latex_environment_arguments, LATEX_OPAQUE_ENVIRONMENTS
 from src.formats.latex.coverage import untranslated_prose
 import sys
 import os
@@ -222,6 +222,7 @@ class ValidatorAgent(BaseToolAgent):
 
         try:
             special_errors = self._special_char_errors(content, trans)
+            special_errors += self._environment_argument_errors(content, trans)
             src_symbols, trans_symbols = [], []
             if self.prose_equivalences:
                 content, src_symbols = self._normalize_prose_symbols(content)
@@ -264,6 +265,23 @@ class ValidatorAgent(BaseToolAgent):
         if errors:
             return "LaTeX 命令翻译结果不一致：\n" + "\n".join(errors)
         return None        
+
+    @staticmethod
+    def _environment_argument_errors(content: str, trans: str) -> List[str]:
+        r"""环境的列格式、宽度和键值选项必须与原文逐字一致。"""
+        source = latex_environment_arguments(content)
+        translated = latex_environment_arguments(trans)
+        if len(source) != len(translated):
+            return []  # 环境数量和顺序变化由命令序列校验报告。
+        def name(fragment):
+            match = re.match(r"\\begin\s*\{[^{}]*\}", fragment)
+            return match.group(0) if match else fragment
+
+        return [
+            f"环境参数必须与原文一致：应为 '{expected}'，实际为 '{actual}'"
+            for expected, actual in zip(source, translated)
+            if expected != actual and name(expected) == name(actual)
+        ][:3]
 
     @staticmethod
     def _special_char_errors(content: str, trans: str) -> List[str]:

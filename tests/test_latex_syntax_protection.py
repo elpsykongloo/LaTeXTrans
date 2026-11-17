@@ -89,6 +89,25 @@ class LatexSyntaxProtectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(protection.validate(protection.protected_text))
         self.assertEqual(protection.restore(protection.protected_text), source)
 
+    def test_environment_key_value_options_are_frozen(self):
+        frozen = (
+            r"\begin{adjustbox}{max width=\textwidth}",
+            r"\begin{adjustbox}{center}",
+            r"\begin{tblr}{colspec={Q[l]X}, row{1}={font=\bfseries}}",
+            r"\adjustbox{max width=\linewidth}",
+        )
+        for opening in frozen:
+            with self.subTest(opening=opening):
+                source = f"{opening}{{Model results}}\n\\end{{x}}"
+                protection = protect_latex_syntax(source)
+                self.assertIn(opening, protection.replacements.values())
+                self.assertIn("Model results", protection.protected_text)
+                self.assertEqual(protection.restore(protection.protected_text), source)
+
+        # 自然语言标题参数仍交给模型翻译。
+        titled = protect_latex_syntax(r"\begin{theorem}{Main result}text\end{theorem}")
+        self.assertIn("{Main result}", titled.protected_text)
+
     def test_protection_rejects_missing_duplicate_or_reordered_markers(self):
         source = r"start \textbf{A} and \emph{B} end"
         protection = protect_latex_syntax(source)
@@ -645,6 +664,30 @@ class ValidatorCommandTests(unittest.TestCase):
         }
 
         self.assertIsNone(self.validator._validate_closed_brackets(part))
+
+    def test_reports_translated_environment_options(self):
+        source = (
+            "\\begin{table*}\n\\begin{adjustbox}{max width=\\textwidth}\n"
+            "\\begin{tabular}{lc}Model & A\\\\\\end{tabular}\n\\end{adjustbox}\n\\end{table*}"
+        )
+        broken = source.replace("max width", "最大宽度").replace("Model", "模型")
+        error = self.validator._validate_command({"content": source, "trans_content": broken})
+        self.assertIsNotNone(error)
+        self.assertIn("最大宽度", error)
+        self.assertIsNone(self.validator._validate_command({
+            "content": source, "trans_content": source.replace("Model", "模型"),
+        }))
+
+    def test_cached_2609_08936_adjustbox_translation_is_rejected(self):
+        output_path = Path("outputs/ch_2609.08936/envs_map.json")
+        if not output_path.is_file():
+            self.skipTest("当前工作区没有该论文的翻译产物")
+        parts = json.loads(output_path.read_text(encoding="utf-8"))
+        broken = [part for part in parts if "最大宽度" in part.get("trans_content", "")]
+        if not broken:
+            self.skipTest("翻译产物已重新生成")
+        for part in broken:
+            self.assertIn("环境参数", self.validator._validate_command(part))
 
 
 if __name__ == "__main__":

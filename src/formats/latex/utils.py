@@ -132,7 +132,16 @@ _LAYOUT_ARGUMENT_COUNTS = {
     "vspace": 1, "hspace": 1, "enlargethispage": 1,
     "multicolumn": 2, "multirow": 2, "fontsize": 2,
     "scalebox": 1, "resizebox": 2, "rule": 2,
+    # 键值选项：键名由宏包定义，译成"最大宽度"等会触发 xkeyval 未定义键错误。
+    "adjustbox": 1, "captionsetup": 1, "sisetup": 1,
 }
+# ``\begin{env}`` 之后的强制参数中不含自然语言的环境及其参数个数。
+_ENVIRONMENT_ARGUMENT_COUNTS = {
+    "minipage": 1, "tabular": 1, "tabular*": 2, "tabularx": 2,
+    "tabulary": 2, "longtable": 1, "wrapfigure": 2, "wraptable": 2,
+    "adjustbox": 1,
+}
+_KEY_VALUE_KEY_PATTERN = re.compile(r"\s*[A-Za-z@][A-Za-z0-9@ /\-]*(?:\{[^{}]*\})*\s*")
 
 
 def _skip_escaped_character(text: str, index: int) -> int:
@@ -204,12 +213,8 @@ def _consume_command_arguments(
     max_groups = _LAYOUT_ARGUMENT_COUNTS.get(command_name, 2 if command_name == "inputminted" else 1)
     if command_name == "begin":
         environment = re.match(r"\s*\{([^{}]+)\}", text[command_end:])
-        extra_groups = {
-            "minipage": 1, "tabular": 1, "tabular*": 2, "tabularx": 2,
-            "tabulary": 2, "longtable": 1, "wrapfigure": 2, "wraptable": 2,
-        }
         if environment:
-            max_groups += extra_groups.get(environment.group(1), 0)
+            max_groups += _ENVIRONMENT_ARGUMENT_COUNTS.get(environment.group(1), 0)
     consume_braced_argument = command_name != "hyperref"
 
     groups = 0
@@ -241,9 +246,82 @@ def _consume_command_arguments(
                 break
             continue
 
+        # 未登记环境的键值参数（如 ``\begin{tblr}{colspec=...}``）同样不可翻译。
+        if command_name == "begin" and index < len(text) and text[index] == "{":
+            end = _find_balanced_group_end(text, index, "{", "}")
+            if end is not None and _is_key_value_list(text[index + 1:end - 1]):
+                index = end
+                groups += 1
+                continue
+
         break
 
     return index if groups or consumed_optional_argument else command_end
+
+
+def _split_top_level_commas(text: str) -> List[str]:
+    """按不在括号内的逗号切分键值列表。"""
+    items, depth, start, index = [], 0, 0, 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index = _skip_escaped_character(text, index)
+            continue
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            items.append(text[start:index])
+            start = index + 1
+        index += 1
+    items.append(text[start:])
+    return items
+
+
+def _is_key_value_list(text: str) -> bool:
+    """判断参数是否为 ``key=value, flag`` 形式的宏包选项列表。"""
+    has_assignment = False
+    for item in _split_top_level_commas(text):
+        if not item.strip():
+            continue
+        key, separator, _ = item.partition("=")
+        if not _KEY_VALUE_KEY_PATTERN.fullmatch(key):
+            return False
+        has_assignment = has_assignment or bool(separator)
+    return has_assignment
+
+
+def latex_environment_arguments(text: str) -> List[str]:
+    r"""按顺序返回各 ``\begin{env}`` 的不可翻译参数，供校验与原文比对。
+
+    保留环境名、强制参数和键值形式的可选参数；``\begin{proof}[Proof sketch]``
+    这类可选标题允许翻译，代码环境正文和空白差异不参与比较。
+    """
+    protection = protect_latex_syntax(text)
+    fragments = [protection.replacements[token] for token in protection.token_order]
+    fragments.extend(protection.fixed_suffix_fragments)
+    signatures = []
+    for fragment in fragments:
+        opening = re.match(r"\\begin\s*(?=\{)", fragment)
+        if not opening:
+            continue
+        parts, index = ["\\begin"], opening.end()
+        while True:
+            while index < len(fragment) and fragment[index].isspace():
+                index += 1
+            if index >= len(fragment) or fragment[index] not in "{[":
+                break
+            closing = "}" if fragment[index] == "{" else "]"
+            end = _find_balanced_group_end(fragment, index, fragment[index], closing)
+            if end is None:
+                break
+            group = fragment[index:end]
+            if closing == "}" or _is_key_value_list(group[1:-1]):
+                parts.append(re.sub(r"\s+", " ", group))
+            index = end
+        signatures.append("".join(parts))
+    return signatures
 
 
 def _consume_delimited_command_argument(

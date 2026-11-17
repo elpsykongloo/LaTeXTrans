@@ -184,24 +184,54 @@ class LatexCompileRepairAgent(BaseToolAgent):
                 continue
             if line < 1 or line > len(source):
                 continue
-            start, end = max(1, line - self.CONTEXT_RADIUS), min(len(source), line + self.CONTEXT_RADIUS)
-            window = source[start - 1:end]
-            if max(map(len, window), default=0) > self.MAX_EDIT_CHARS:
-                continue
-            size = sum(map(len, window))
-            if used + size > self.MAX_CONTEXT_CHARS:
-                continue
-            if any(item["file"] == error["file"] and item["start_line"] <= line <= item["end_line"] for item in contexts):
-                continue
-            contexts.append({
-                "file": error["file"], "start_line": start, "end_line": end,
-                "lines": [{"line": start + offset, "text": text} for offset, text in enumerate(window)],
-            })
-            errors.append({key: error.get(key) for key in ("file", "line", "message")})
-            used += size
+            added = False
+            # adjustbox 等环境在 \end 处才处理选项，TeX 报告的是 \end 行；
+            # 真正需要修改的 \begin 行也要给模型看到。
+            for focus in (line, self._matching_begin_line(source, line)):
+                if focus is None or len(contexts) >= self.MAX_CONTEXTS:
+                    continue
+                if any(item["file"] == error["file"] and item["start_line"] <= focus <= item["end_line"] for item in contexts):
+                    continue
+                start, end = max(1, focus - self.CONTEXT_RADIUS), min(len(source), focus + self.CONTEXT_RADIUS)
+                window = source[start - 1:end]
+                if max(map(len, window), default=0) > self.MAX_EDIT_CHARS:
+                    continue
+                size = sum(map(len, window))
+                if used + size > self.MAX_CONTEXT_CHARS:
+                    continue
+                contexts.append({
+                    "file": error["file"], "start_line": start, "end_line": end,
+                    "lines": [{"line": start + offset, "text": text} for offset, text in enumerate(window)],
+                })
+                used += size
+                added = True
+            if added:
+                errors.append({key: error.get(key) for key in ("file", "line", "message")})
             if len(contexts) >= self.MAX_CONTEXTS:
                 break
         return {"engine": failure.get("engine"), "errors": errors, "contexts": contexts}
+
+    @staticmethod
+    def _matching_begin_line(source: list, line: int) -> Optional[int]:
+        r"""错误行含 ``\end{env}`` 时，向上查找与之配对的 ``\begin{env}`` 行号。"""
+        ending = re.search(r"\\end\s*\{([^{}]+)\}", source[line - 1])
+        if not ending:
+            return None
+        name = re.escape(ending.group(1))
+        pattern = re.compile(rf"\\(begin|end)\s*\{{{name}\}}")
+        depth = 0
+        for number in range(line, 0, -1):
+            text = source[number - 1]
+            if number == line:
+                text = text[:ending.end()]
+            comment = re.search(r"(?<!\\)%", text)
+            if comment:
+                text = text[:comment.start()]
+            for match in reversed(list(pattern.finditer(text))):
+                depth += 1 if match.group(1) == "end" else -1
+                if depth == 0:
+                    return number
+        return None
 
     async def _request_edits(self, context: Dict[str, Any]) -> Dict[str, Any]:
         import aiohttp
