@@ -5,6 +5,11 @@ Upstream releases remain available at [NiuTrans/LaTeXTrans](https://github.com/N
 
 ## Unreleased
 
+- Fix XeLaTeX failures when local templates load Type1 fonts after the CJK preamble (e.g. arXiv 2611.07071, `Cannot use XeTeXglyph with ptmr8c`). Restrict microtype protrusion to Unicode font encodings while keeping native-font protrusion available. Resume regenerates PDFs using saved translations.
+- Preserve nested command braces when translated title/caption text moves before a final command such as `\texorpdfstring`; legitimate closing delimiters are no longer removed as supposed model echoes, avoiding unnecessary translation retries.
+- Classify XeTeX font incompatibilities as environment errors instead of requesting model edits to body text. Skip redundant latexmk reruns for diagnosed engine errors, report the primary error concisely, and fall back to latexmk when direct compilation has not converged.
+- Render CJK punctuation in math environments, and add an available supplementary CJK font when Fandol lacks traditional characters. Font fallback probes are isolated from template font path/extension defaults.
+- Upgrade known legacy Times/Helvetica/Courier/Inconsolata default families to their bundled OpenType counterparts after local templates load and before fontspec binds math fonts, preventing Unicode author names from losing accented letters and avoiding undefined math font shapes. Explicit native font selections are preserved.
 - Parse papers whose text contains literal LLM special tokens such as `<|endoftext|>`; token counting no longer raises tiktoken's disallowed-special-token error.
 - Keep chat-template tokens (`<|im_start|>`, `<|endoftext|>`, …) out of translation requests and restore them verbatim, so model servers cannot treat them as control tokens.
 - Detect CJK characters that XeLaTeX silently drops (`Missing character` in the log). When a template's own CJK font is a subset (e.g. arXiv 2610.19716 ships `NotoSansSC-Prompts.ttf`), recompile with the bundled Fandol fonts; restore the original source if that fails and warn about any glyphs still missing. Earlier compiled PDFs are recompiled on resume.

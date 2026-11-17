@@ -32,6 +32,12 @@ def find_missing_cjk_glyphs(log_text: str) -> Dict[str, int]:
     return missing
 
 
+_ENGINE_COMPATIBILITY_ERROR = re.compile(
+    r"Cannot use XeTeXglyph\b|not\s+a\s+native\s+platform\s+font|"
+    r"Font\s+expansion\s+does\s+not\s+work\s+with\s+xetex",
+    re.IGNORECASE,
+)
+
 _ENVIRONMENT_ERROR = re.compile(
     r"(?:File\s+[`'\"].+?[`'\"]\s+not found|I can't find file|"
     r"(?:font[^\n]*(?:cannot be found|not found|not loadable))|"
@@ -115,7 +121,7 @@ def extract_latex_errors(text: str, main_tex: Path, project_dir: Path) -> list[D
             local = True
         except ValueError:
             name, local = str(candidate), False
-        environment = bool(_ENVIRONMENT_ERROR.search(message))
+        environment = bool(_ENVIRONMENT_ERROR.search(message) or _ENGINE_COMPATIBILITY_ERROR.search(message))
         item = {
             "file": name,
             "line": line,
@@ -385,9 +391,28 @@ class LaTexCompiler:
             return None
 
         if self._can_use_fast_path(tex_path):
+            previous_failure_count = len(self.failures)
             pdf_path = self._fast_compile(tex_path, output_path, engine, expected_pdf)
             if pdf_path:
                 return pdf_path
+            # latexmk 仍会调用同一引擎，不能修复已定位的语法/字体兼容错误。
+            # 只判断本次 fast path 的失败；缺辅助文件等问题仍交给 latexmk。
+            if len(self.failures) > previous_failure_count:
+                failure = self.failures[-1]
+                local_syntax_error = (
+                    failure["kind"] == "tex_error"
+                    and bool(failure["errors"])
+                    and all(error["repairable"] for error in failure["errors"])
+                )
+                if failure["engine"] == engine and (
+                    local_syntax_error or _ENGINE_COMPATIBILITY_ERROR.search(failure["message"])
+                ):
+                    try:
+                        expected_pdf.unlink(missing_ok=True)
+                    except OSError:
+                        pass  # 被阅读器锁定的残缺 PDF 不能掩盖真正的 TeX 错误。
+                    print(f"❌ {engine} 编译错误：{failure['message']}（跳过无效的 latexmk 重试）。")
+                    return None
             print(f"⚠️ {engine} 直接编译未成功，回退到 latexmk。")
 
         command = [
@@ -429,8 +454,11 @@ class LaTexCompiler:
 
         if completed.returncode != 0:
             self._record_failure(engine, tex_path, output_path, returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
-            print(f"❌ {engine} 返回非零状态码 {completed.returncode}。")
-            self._print_compile_tail(completed.stdout, completed.stderr)
+            print(f"❌ latexmk ({engine}) 返回非零状态码 {completed.returncode}。")
+            if self.last_failure["errors"]:
+                print(self.last_failure["message"])
+            else:
+                self._print_compile_tail(completed.stdout, completed.stderr)
             if expected_pdf.exists():
                 try:
                     expected_pdf.unlink()
@@ -645,7 +673,7 @@ class LaTexCompiler:
         def run_pass(final: bool) -> bool:
             completed = self._run_engine(tex_path, output_path, engine, final=final)
             if completed is None or completed.returncode != 0:
-                if completed is not None:
+                if completed is not None and not (self.last_failure or {}).get("errors"):
                     self._print_compile_tail(completed.stdout, completed.stderr)
                 return False
             return True
@@ -675,6 +703,14 @@ class LaTexCompiler:
                 if not self._run_bibtex(tex_path, output_path):
                     return None
                 rerun = True
+
+        if rerun:
+            self._record_failure(
+                engine, tex_path, output_path,
+                reason=f"直接编译 {passes} 轮后引用或目录仍未收敛，交给 latexmk 继续处理。",
+                read_log=False,
+            )
+            return None
 
         if xetex:
             xdv = output_path / f"{tex_path.stem}.xdv"

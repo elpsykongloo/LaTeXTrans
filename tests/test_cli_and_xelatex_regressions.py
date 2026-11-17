@@ -127,8 +127,10 @@ class CliAndXeLaTeXRegressionTests(unittest.TestCase):
 
         translated = add_chinese_package(source)
 
-        hook = r"\AddToHook{package/microtype/after}{\microtypesetup{expansion=false}}"
+        hook = r"\AddToHook{package/microtype/after}"
         self.assertIn(hook, translated)
+        self.assertIn(r"\microtypesetup{expansion=false}", translated)
+        self.assertIn(r"\DeclareMicrotypeSet[protrusion]{latextrans-unicode}{encoding={TU,EU1}}", translated)
         self.assertLess(
             translated.index(hook),
             translated.index(r"\usepackage[protrusion=true,expansion=true]{microtype}"),
@@ -167,6 +169,46 @@ class CliAndXeLaTeXRegressionTests(unittest.TestCase):
             self.assertNotIn("Font expansion does not work with xetex", log)
             self.assertIn("Character protrusion enabled", log)
 
+    @unittest.skipUnless(shutil.which("xelatex"), "XeLaTeX is unavailable")
+    def test_xelatex_compiles_type1_fonts_loaded_from_local_style_or_class(self):
+        # arXiv 2611.07071: a style selects Times and T1, then \textbullet
+        # selects TS1/ptmr8c and microtype calls XeTeXglyph on a Type1 font.
+        for loaded_by_class in (False, True):
+            with self.subTest(loaded_by_class=loaded_by_class), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "legacy.sty").write_text(
+                    "\\renewcommand{\\rmdefault}{ptm}\n"
+                    "\\renewcommand{\\sfdefault}{phv}\n"
+                    "\\renewcommand{\\ttdefault}{pcr}\n"
+                    "\\RequirePackage[T1]{fontenc}\n"
+                    "\\RequirePackage{amsmath}\n"
+                    "\\RequirePackage[protrusion=true,expansion=true]{microtype}\n",
+                    encoding="utf-8",
+                )
+                (root / "paper.cls").write_text(
+                    "\\LoadClass{article}\n\\RequirePackage{legacy}\n", encoding="utf-8"
+                )
+                source = (
+                    ("\\documentclass{paper}\n" if loaded_by_class else
+                     "\\documentclass{article}\n\\usepackage{legacy}\n")
+                    + "\\begin{document}\n\\begin{itemize}\n"
+                    "\\item \\textbf{中文字体兼容测试} text. $x：y。$\n"
+                    "ą \\textbf{ą} \\textsf{ą} \\texttt{ą}\n"
+                    "$\\mathrm{Model}+\\mathbf{Model}+\\mathsf{Model}$\n"
+                    "\\end{itemize}\n\\end{document}\n"
+                )
+                (root / "main.tex").write_text(add_chinese_package(source), encoding="utf-8")
+                completed = subprocess.run(
+                    ["xelatex", "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
+                    cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    stdin=subprocess.DEVNULL, timeout=300,
+                )
+                log = (root / "main.log").read_text(encoding="utf-8", errors="replace")
+                self.assertEqual(completed.returncode, 0, log[-2500:])
+                self.assertNotIn("Cannot use XeTeXglyph", log)
+                self.assertNotIn("Missing character:", log)
+                self.assertNotRegex(log, r"Font shape `TU/(?:ptm|phv|pcr)/[^\n]+undefined")
+
     def test_removes_directive_even_when_ctex_already_exists(self):
         source = (
             r"\documentclass{article}"
@@ -178,6 +220,32 @@ class CliAndXeLaTeXRegressionTests(unittest.TestCase):
         translated = add_chinese_package(source)
 
         self.assertNotRegex(translated, r"(?m)^[ \t]*\\pdfoutput\s*=")
+
+    @unittest.skipUnless(shutil.which("xelatex"), "XeLaTeX is unavailable")
+    def test_native_font_choices_survive_legacy_font_compatibility_hook(self):
+        source = (
+            "\\documentclass{article}\n"
+            "\\setmainfont{Latin Modern Roman}\n"
+            "\\setsansfont{Latin Modern Sans}\n"
+            "\\setmonofont{Latin Modern Mono}\n"
+            "\\let\\savedmain\\rmdefault\n"
+            "\\let\\savedsans\\sfdefault\n"
+            "\\let\\savedmono\\ttdefault\n"
+            "\\begin{document}\n"
+            "\\ifx\\savedmain\\rmdefault\\else\\errmessage{Main font changed}\\fi\n"
+            "\\ifx\\savedsans\\sfdefault\\else\\errmessage{Sans font changed}\\fi\n"
+            "\\ifx\\savedmono\\ttdefault\\else\\errmessage{Mono font changed}\\fi\n"
+            "中文 text.\\end{document}\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "main.tex").write_text(add_chinese_package(source), encoding="utf-8")
+            completed = subprocess.run(
+                ["xelatex", "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
+                cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL, timeout=300,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout[-2500:])
 
     def test_normalizes_escaped_underscores_only_in_reference_arguments(self):
         translated = (

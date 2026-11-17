@@ -136,6 +136,27 @@ class LatexSyntaxProtectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.count(r"\end{document}"), 1)
         self.assertTrue(restored.startswith("正文。"))
 
+    async def test_moved_title_text_does_not_delete_inner_command_closing_brace(self):
+        source = r"\title{Shaping \& Monitoring Models \texorpdfstring{\\}{ } through their Internal Representations}"
+        protection = protect_latex_syntax(source, protect_group_delimiters=True)
+        candidate = protection.protected_text.replace(
+            " through their Internal Representations", ""
+        ).replace("Shaping", "通过内部表征塑造").replace("Monitoring Models", "监测模型")
+        # All tokens survive, but the nested command is now at the end. Its
+        # closing brace must not be mistaken for an echo of the title's brace.
+        restored = protection.restore(candidate)
+        self.assertEqual(find_latex_bracket_errors(restored), [])
+        self.assertTrue(restored.endswith(r"\texorpdfstring{\\}{ }}"))
+
+        session = _FakeSession([candidate])
+        agent = TranslatorAgent({"llm_config": {"api_key": "test", "base_url": "https://example.test/v1"}})
+        result = await agent._request_llm_for_trans(
+            "Translate", source, "<PLACEHOLDER_CAP_1>", "cap", session
+        )
+        self.assertEqual(result, restored)
+        self.assertEqual(len(session.payloads), 1)
+        self.assertFalse(agent.have_fail_parts)
+
     def test_rejects_model_generated_closing_marker_artifacts(self):
         source = r"prefix \textbf{value} suffix"
         protection = protect_latex_syntax(source)

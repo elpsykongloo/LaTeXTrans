@@ -1,7 +1,11 @@
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 from src.formats.latex.compile import LaTexCompiler, find_missing_cjk_glyphs
-from src.formats.latex.utils import CJK_FONT_FALLBACK_MARKER, add_cjk_font_fallback
+from src.formats.latex.utils import CJK_FONT_FALLBACK_MARKER, add_chinese_package, add_cjk_font_fallback
 
 
 # 摘自 arXiv 2610.19716 译文编译日志：作者自带的子集字体缺少大部分汉字。
@@ -97,3 +101,36 @@ def test_complete_fonts_skip_recompile(tmp_path):
 
     assert compiler._ensure_cjk_glyphs(str(tex), out_dir, "xelatex", "ok.pdf") == "ok.pdf"
     assert calls == []
+
+
+@pytest.mark.skipif(not shutil.which("xelatex") or not shutil.which("kpsewhich"), reason="XeLaTeX is unavailable")
+def test_traditional_glyph_fallback_and_math_punctuation_compile(tmp_path):
+    available = subprocess.run(
+        ["kpsewhich", "bsmi00lp.ttf"], capture_output=True, text=True, timeout=30,
+    )
+    if available.returncode != 0:
+        fonts = subprocess.run(
+            ["fc-list", ":", "family"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
+        ).stdout if shutil.which("fc-list") else ""
+        if not any(name in fonts for name in ("Noto Serif CJK SC", "Source Han Serif SC", "AR PL Mingti2L Big5", "SimSun")):
+            pytest.skip("No supplementary CJK font is available")
+    source = (
+        "\\documentclass{article}\n"
+        "\\defaultfontfeatures{Extension=.otf}\n"
+        "\\begin{document}\n"
+        "中文為 $x：y。$ \\textbf{為} \\textsf{為} \\texttt{為}\n"
+        "\\end{document}\n"
+    )
+    (tmp_path / "main.tex").write_text(
+        add_cjk_font_fallback(add_chinese_package(source)), encoding="utf-8"
+    )
+    completed = subprocess.run(
+        ["xelatex", "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
+        cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL, timeout=300,
+    )
+    log = (tmp_path / "main.log").read_text(encoding="utf-8", errors="replace")
+    assert completed.returncode == 0, log[-2500:]
+    assert not find_missing_cjk_glyphs(log)
+    assert (tmp_path / "main.pdf").stat().st_size > 0

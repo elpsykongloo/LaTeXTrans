@@ -305,10 +305,79 @@ class CompilerDiagnosticsTests(unittest.TestCase):
     def test_missing_package_and_font_are_environment_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            for message in ("LaTeX Error: File `missing.sty' not found.", 'Package fontspec Error: The font "Nonexistent" cannot be found.'):
+            for message in (
+                "LaTeX Error: File `missing.sty' not found.",
+                'Package fontspec Error: The font "Nonexistent" cannot be found.',
+                "Cannot use XeTeXglyph with ptmr8c; not a native platform font.",
+                "Package microtype Error: Font expansion does not work with xetex.",
+            ):
                 error = extract_latex_errors(f"./main.tex:2: {message}", root / "main.tex", root)[0]
                 self.assertTrue(error["environment_error"])
                 self.assertFalse(error["repairable"])
+
+    def test_known_engine_errors_skip_latexmk_and_remove_partial_pdf(self):
+        for message in (
+            "Misplaced alignment tab character &.",
+            "Cannot use XeTeXglyph with ptmr8c; not a native platform font.",
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                main = root / "main.tex"
+                main.write_text(SAMPLE, encoding="utf-8")
+                out = root / "build_xelatex"
+                compiler = LaTexCompiler(str(root))
+
+                def failed(command, **kwargs):
+                    (out / "main.pdf").write_text("incomplete", encoding="utf-8")
+                    return subprocess.CompletedProcess(command, 1, f"./main.tex:3: {message}", "")
+
+                with mock.patch("src.formats.latex.compile.subprocess.run", side_effect=failed) as run, \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertIsNone(compiler._compile_with_engine(str(main), str(out), "xelatex"))
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.args[0][0], "xelatex")
+                self.assertFalse((out / "main.pdf").exists())
+                self.assertIn(message, compiler.last_failure["message"])
+
+    def test_generated_bibliography_error_still_falls_back_to_latexmk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            main = root / "main.tex"
+            main.write_text(SAMPLE, encoding="utf-8")
+            compiler = LaTexCompiler(str(root))
+            failed = subprocess.CompletedProcess([], 1, "./main.bbl:3: Misplaced alignment tab character &.", "")
+            with mock.patch("src.formats.latex.compile.subprocess.run", return_value=failed) as run, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertIsNone(compiler._compile_with_engine(str(main), str(root / "build_xelatex"), "xelatex"))
+            self.assertEqual([call.args[0][0] for call in run.call_args_list], ["xelatex", "latexmk"])
+
+    def test_missing_generated_input_still_falls_back_to_latexmk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            main = root / "main.tex"
+            main.write_text(SAMPLE, encoding="utf-8")
+            compiler = LaTexCompiler(str(root))
+            failed = subprocess.CompletedProcess([], 1, "./main.tex:3: LaTeX Error: File `main.ind' not found.", "")
+            with mock.patch("src.formats.latex.compile.subprocess.run", return_value=failed) as run, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertIsNone(compiler._compile_with_engine(str(main), str(root / "build_xelatex"), "xelatex"))
+            self.assertEqual([call.args[0][0] for call in run.call_args_list], ["xelatex", "latexmk"])
+
+    def test_fast_path_does_not_publish_pdf_before_references_converge(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            main = root / "main.tex"
+            main.write_text(SAMPLE, encoding="utf-8")
+            compiler = LaTexCompiler(str(root))
+            with mock.patch.object(compiler, "_run_engine", return_value=subprocess.CompletedProcess([], 0)) as run, \
+                 mock.patch.object(compiler, "_first_pass_is_final", return_value=False), \
+                 mock.patch.object(compiler, "_needs_bibtex", return_value=False), \
+                 mock.patch.object(compiler, "_needs_rerun", return_value=True), \
+                 mock.patch("src.formats.latex.compile.subprocess.run") as convert:
+                self.assertIsNone(compiler._fast_compile(main, root, "xelatex", root / "main.pdf"))
+            self.assertEqual(run.call_count, compiler._MAX_PASSES)
+            convert.assert_not_called()
+            self.assertIn("仍未收敛", compiler.last_failure["message"])
 
     def test_nonzero_returncode_with_pdf_is_a_real_failure_and_log_is_fresh(self):
         with tempfile.TemporaryDirectory() as folder:

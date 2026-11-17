@@ -206,6 +206,13 @@ and edits only the generated translation. Backups, `repair_report.json`, and
 or fonts produce diagnostics. Any translation, validation, compilation, or
 bilingual export failure makes the CLI exit with a nonzero status.
 
+Chinese/Japanese output automatically adapts common legacy text fonts and
+`microtype` settings for XeLaTeX, including fonts loaded by local `.sty`/`.cls`
+templates. Existing native font selections are preserved. CJK punctuation in
+math is supported; detected missing Chinese glyphs trigger a font fallback using
+available static fonts. These compatibility changes do not require LLM requests.
+When compilation rules change, resume rebuilds the PDF from saved translations.
+
 Validation accepts equivalent standalone prose symbols, such as `\(\sim\)` and
 “～”, or `\ldots` and “……”. Mathematical expressions, delimiters, and structural
 placeholders remain strict. Set `validation_prose_equivalences = false` to disable

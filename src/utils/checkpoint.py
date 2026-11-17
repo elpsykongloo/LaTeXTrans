@@ -130,7 +130,7 @@ def build_metadata(project_dir: str, config: Dict[str, Any], previous: Optional[
     return {"project_dir": str(project), "sources": sources, "translation": translation, "term_files": terms}
 
 
-COMPILE_CHECKS_VERSION = "caption-edge-breaks-2"
+COMPILE_CHECKS_VERSION = "xetex-font-compatibility-5"
 
 
 def compile_metadata(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -139,7 +139,9 @@ def compile_metadata(config: Dict[str, Any]) -> Dict[str, Any]:
         "compile_repair_attempts": config.get("compile_repair_attempts", 2),
         # 重建或编译检查规则变化时让旧 PDF 失效，续跑时只重新生成，不重新翻译
         # （cjk-glyphs-1：检查并修复 CJK 缺字；caption-edge-breaks-2：去掉
-        # 标题/图注首尾多余换行，XeLaTeX 下关闭 microtype expansion）。
+        # 标题/图注首尾多余换行；xetex-font-compatibility-5：限制 microtype
+        # protrusion 的字体编码，在数学字体绑定前设置原生字体，支持数学中文/
+        # 补充字体，并检查编译收敛）。
         "compile_checks": COMPILE_CHECKS_VERSION,
         **{key: value for key, value in config.items() if key.startswith("compiler_")},
     }

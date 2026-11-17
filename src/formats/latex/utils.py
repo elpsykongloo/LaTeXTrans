@@ -394,6 +394,11 @@ class LatexSyntaxProtection:
             fragment_core = fragment.strip()
             if not fragment_core:
                 continue
+            # 单个括号可能关闭模型输出中的内部命令，无法证明是尾部回声。
+            # 例如标题把 \texorpdfstring{\\}{ } 移到最后时，这里的 } 属于
+            # 该命令；删掉它再追加标题的 } 会让外层标题缺一个右括号。
+            if fragment_core in {"{", "}", "[", "]"}:
+                break
             if not deduplicated_middle.endswith(fragment_core):
                 break
             deduplicated_middle = deduplicated_middle[:-len(fragment_core)].rstrip()
@@ -1989,6 +1994,19 @@ def _chinese_fallback_font_lines(latex_code: str) -> List[str]:
         main,
         r"\setCJKsansfont[Extension=.otf,UprightFont=*-Regular,BoldFont=*-Bold]{FandolHei}",
         r"\setCJKmonofont[Extension=.otf]{FandolFang-Regular}",
+        # Fandol 主要覆盖简体字，不能保证包含译文中的繁体字（如「為」）。
+        # 只补缺字；已有字仍使用上面的 Fandol 字体，不依赖某个操作系统。
+        # 清空局部默认特性，避免模板的 Path/Extension 污染字体名探测。
+        r"\begingroup",
+        r"\defaultfontfeatures{}",
+        _font_fallback_chain(
+            r"\setCJKfallbackfamilyfont{\CJKrmdefault}[AutoFakeBold,AutoFakeSlant]",
+            # "Noto Serif SC" 可能解析为 VF.ttf：XeTeX 能排版，但 xdvipdfmx
+            # 无法嵌入该可变字体。只使用常见的静态字体族候选。
+            ["Noto Serif CJK SC", "Source Han Serif SC", "AR PL Mingti2L Big5", "SimSun"],
+        ),
+        r"\endgroup",
+        r"\xeCJKsetup{AutoFallBack=true}",
     ]
 
 
@@ -2043,6 +2061,47 @@ def add_target_language_package(latex_code: str, target_language: Optional[str] 
     if family == "ja":
         return add_ja_package(latex_code)
     return latex_code
+
+
+def _xelatex_native_font_lines() -> List[str]:
+    """在本地模板加载完毕后，将常见的旧式西文字体族换成对应的 OpenType 字体。"""
+    # fontspec 在 begindocument 中绑定数学字体；普通 AtBeginDocument 太晚，
+    # 会留下 TU/ptm 等不存在的数学字体族。旧版 LaTeX 保留原有兼容路径。
+    lines = [
+        r"\makeatletter",
+        r"\ifcsname AddToHook\endcsname",
+        r"\def\latextrans@fontsetup{\AddToHook{begindocument/before}}",
+        r"\else",
+        r"\let\latextrans@fontsetup\AtBeginDocument",
+        r"\fi",
+        r"\latextrans@fontsetup{%",
+    ]
+    for family, command, legacy, native in (
+        (r"\rmdefault", r"\setmainfont", "ptm", "texgyretermes"),
+        (r"\sfdefault", r"\setsansfont", "phv", "texgyreheros"),
+        (r"\ttdefault", r"\setmonofont", "pcr", "texgyrecursor"),
+        (r"\ttdefault", r"\setmonofont", "zi4", "Inconsolatazi4"),
+    ):
+        # 不改动已经配置好的 fontspec 字体族；仅匹配已知的 Type1 默认族。
+        # 使用 TeX 自带字体文件，并显式覆盖模板残留的 Path/Extension。
+        if legacy == "zi4":
+            upright = "Regular"
+            features = (
+                "UprightFont=*-Regular,BoldFont=*-Bold,ItalicFont=*-Regular,"
+                "BoldItalicFont=*-Bold,ItalicFeatures={FakeSlant=0.2},BoldItalicFeatures={FakeSlant=0.2}"
+            )
+        else:
+            upright = "regular"
+            features = "UprightFont=*-regular,BoldFont=*-bold,ItalicFont=*-italic,BoldItalicFont=*-bolditalic"
+        font_setup = command + f"[Path=,Extension=.otf,{features}]{{{native}}}"
+        lines.extend([
+            rf"\edef\latextrans@currentfont{{{family}}}\def\latextrans@legacyfont{{{legacy}}}%",
+            r"\ifx\latextrans@currentfont\latextrans@legacyfont",
+            rf"\IfFontExistsTF{{{native}-{upright}.otf}}{{{font_setup}}}{{}}%",
+            r"\fi",
+        ])
+    lines.extend([r"}", r"\makeatother"])
+    return lines
 
 
 def _add_xecjk_support(latex_code: str, cjk_font_lines: Optional[List[str]] = None) -> str:
@@ -2105,12 +2164,17 @@ def _add_xecjk_support(latex_code: str, cjk_font_lines: Optional[List[str]] = No
         # 因此在宏包已加载时关闭全部微排版功能。
         # 更常见的是导言区或本地 .sty 之后才以 expansion=true 加载
         # microtype：XeTeX 不支持字体扩展，该显式选项会在 \begin{document}
-        # 触发致命错误。此时只在加载后关闭 expansion，保留可用的 protrusion。
+        # 触发致命错误。关闭 expansion，并把 protrusion 限定在 Unicode
+        # 编码；本地 .sty 还可能通过 fontenc/\rmdefault 引入 T1/TS1
+        # Type1 字体（如 ptmr8c），即使扩展已关闭仍会触发 XeTeXglyph 错误。
         r"\ifcsname microtypesetup\endcsname",
         r"\microtypesetup{activate=false}",
         r"\else",
         r"\ifcsname AddToHook\endcsname",
-        r"\AddToHook{package/microtype/after}{\microtypesetup{expansion=false}}",
+        r"\AddToHook{package/microtype/after}{%",
+        r"\microtypesetup{expansion=false}%",
+        r"\DeclareMicrotypeSet[protrusion]{latextrans-unicode}{encoding={TU,EU1}}%",
+        r"\UseMicrotypeSet[protrusion]{latextrans-unicode}}",
         r"\fi",
         r"\fi",
     ]
@@ -2118,6 +2182,10 @@ def _add_xecjk_support(latex_code: str, cjk_font_lines: Optional[List[str]] = No
         package_lines.append(r"\usepackage{xeCJK}")
         # 原稿已自带 xeCJK 时尊重作者的字体配置，只在我们加载 xeCJK 后设置字体。
         package_lines.extend(cjk_font_lines or [])
+    # 数学环境中的中文标点也必须使用 CJK 字体，否则 XeTeX 会静默丢字。
+    # 让 xeCJK 配置数学字符映射，不改写公式或把中文标点替换成英文。
+    package_lines.append(r"\xeCJKsetup{CJKmath=true}")
+    package_lines.extend(_xelatex_native_font_lines())
     if had_cjk_package:
         # CJK/CJKutf8 只适用于 pdfTeX，已被移除；原文正文中的
         # \begin{CJK}{UTF8}{gkai} 由 xeCJK 直接排版，这里提供空环境

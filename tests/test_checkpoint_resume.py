@@ -252,12 +252,15 @@ def test_coordinator_completed_reuse_is_offline_and_does_not_require_key(project
     assert result.status == "success" and result.resumed
 
 
-@pytest.mark.parametrize("reason", ["missing_pdf", "compile_setting"])
+@pytest.mark.parametrize("reason", ["missing_pdf", "compile_setting", "compile_version"])
 def test_missing_completed_pdf_or_compile_setting_recompiles_without_retranslation(project, reason):
     source, output, config = project
-    _, pdf = _completed_checkpoint(project)
+    store, pdf = _completed_checkpoint(project)
     if reason == "missing_pdf":
         pdf.unlink()
+    elif reason == "compile_version":
+        store.data["compile_settings"]["compile_checks"] = "caption-edge-breaks-2"
+        store.save()
     else:
         config["compile_repair"] = False
     config["llm_config"]["api_key"] = ""
