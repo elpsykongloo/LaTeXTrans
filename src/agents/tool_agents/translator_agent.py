@@ -290,7 +290,7 @@ class TranslatorAgent(BaseToolAgent):
         units: List[tuple] = []
         seen_envs, seen_caps = set(), set()
         for i, section in enumerate(sections):
-            if section["section"] not in ("-1", "0"):
+            if str(section["section"]) != "-1":
                 units.append(("sec", i))
             cap_phs = re.findall(r"<PLACEHOLDER_CAP_\d+>", section["content"])
             for placeholder in re.findall(r"<PLACEHOLDER_ENV_\d+>", section["content"]):
@@ -575,7 +575,7 @@ class TranslatorAgent(BaseToolAgent):
         """把校验报告中的各类错误合并成重翻提示。"""
         return "\n".join(
             error_report.get(key, "")
-            for key in ("command_error", "ph_error", "bracket_error")
+            for key in ("command_error", "ph_error", "bracket_error", "coverage_error")
             if error_report.get(key)
         )
 

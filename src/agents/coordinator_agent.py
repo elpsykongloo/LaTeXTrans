@@ -147,12 +147,16 @@ class CoordinatorAgent:
         stage = "parse"
         restored = checkpoint.restore_maps()
         if not restored:
+            previous_translations = checkpoint.reusable_translation_maps()
             checkpoint.begin(stage)
             try:
                 ParserAgent(config=self.config, project_dir=self.project_dir, output_dir=transed_project_dir).execute()
             except BaseException as exc:
                 checkpoint.fail(stage, str(exc))
                 raise
+            reused = checkpoint.reuse_after_parse(previous_translations)
+            if reused:
+                print(f"解析规则更新，保留 {reused} 个内容未变化的翻译片段。")
             checkpoint.stage_completed(stage, snapshot=True)
         else:
             print(f"🤖⏯️ {self.name}: 从已保存的解析与翻译片段继续 {base_name}。")

@@ -126,6 +126,13 @@ _LATEX_OPAQUE_COMMANDS = frozenset(
     }
 )
 _LATEX_DELIMITED_OPAQUE_COMMANDS = frozenset({"verb", "lstinline"})
+_LAYOUT_ARGUMENT_COUNTS = {
+    "setlength": 2, "addtolength": 2, "setcounter": 2, "addtocounter": 2,
+    "definecolor": 3, "colorlet": 2, "hypersetup": 1,
+    "vspace": 1, "hspace": 1, "enlargethispage": 1,
+    "multicolumn": 2, "multirow": 2, "fontsize": 2,
+    "scalebox": 1, "resizebox": 2, "rule": 2,
+}
 
 
 def _skip_escaped_character(text: str, index: int) -> int:
@@ -194,7 +201,15 @@ def _consume_command_arguments(
 
     # href 的第二个参数是可翻译的显示文本，只保护第一个 URL 参数。
     # inputminted 的语言名和文件路径都不可翻译。
-    max_groups = 2 if command_name == "inputminted" else 1
+    max_groups = _LAYOUT_ARGUMENT_COUNTS.get(command_name, 2 if command_name == "inputminted" else 1)
+    if command_name == "begin":
+        environment = re.match(r"\s*\{([^{}]+)\}", text[command_end:])
+        extra_groups = {
+            "minipage": 1, "tabular": 1, "tabular*": 2, "tabularx": 2,
+            "tabulary": 2, "longtable": 1, "wrapfigure": 2, "wraptable": 2,
+        }
+        if environment:
+            max_groups += extra_groups.get(environment.group(1), 0)
     consume_braced_argument = command_name != "hyperref"
 
     groups = 0
@@ -222,7 +237,7 @@ def _consume_command_arguments(
                 return command_end
             index = end
             groups += 1
-            if command_name == "captionof":
+            if command_name in {"captionof", "end"}:
                 break
             continue
 
@@ -634,6 +649,13 @@ def protect_latex_syntax(
             add_fragment(position, end)
             position = end
             continue
+        if text[position] == "%":
+            # 注释还会吞掉行尾换行。连同换行冻结，不能让翻译引入空格。
+            end = text.find("\n", position)
+            end = len(text) if end < 0 else end + 1
+            add_fragment(position, end)
+            position = end
+            continue
         protected_token = LATEX_PROTECTED_TOKEN_PATTERN.match(text, position)
         if protected_token:
             add_fragment(protected_token.start(), protected_token.end())
@@ -664,7 +686,7 @@ def protect_latex_syntax(
             if command_match:
                 command_end = command_match.end()
                 command_name = _command_name(command_match.group(0))
-                if command_name in _LATEX_OPAQUE_COMMANDS:
+                if command_name in _LATEX_OPAQUE_COMMANDS | _LAYOUT_ARGUMENT_COUNTS.keys() | {"begin", "end"}:
                     fragment_end = _consume_command_arguments(
                         text,
                         command_end,
@@ -1500,7 +1522,9 @@ def remove_comments(tex: str) -> str:
         # Remove inline comments (ignore escaped %)
         comment_start = _latex_comment_start(line)
         if comment_start is not None:
-            line = line[:comment_start]
+            # TeX 的 % 会抑制行尾空白。只删注释文字而保留 %，否则宏、
+            # 并排 minipage / tcbraster 等会多出空格甚至整列换行。
+            line = line[:comment_start] + '%'
         cleaned.append(line.rstrip())  # Optionally remove trailing whitespace
 
     tex = '\n'.join(cleaned)

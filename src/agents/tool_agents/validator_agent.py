@@ -5,6 +5,7 @@ from pathlib import Path
 from collections import Counter
 from pylatexenc.latexwalker import LatexWalker
 from src.formats.latex.utils import find_latex_bracket_errors, LATEX_OPAQUE_ENVIRONMENTS
+from src.formats.latex.coverage import untranslated_prose
 import sys
 import os
 import re
@@ -185,9 +186,13 @@ class ValidatorAgent(BaseToolAgent):
             )
             self._cache_put(key, cached)
         command_error, ph_error, bracket_error = cached
+        omissions = [] if str(part.get("section")) == "-1" or part.get("need_trans") is False else untranslated_prose(
+            part.get("content", ""), part.get("trans_content", ""),
+            self.config.get("source_language", "en"), self.config.get("target_language", "ch"),
+        )
         error_report = {}
 
-        if not command_error and not ph_error and not bracket_error:
+        if not command_error and not ph_error and not bracket_error and not omissions:
             return None
         else: 
             if "section" in part:
@@ -206,6 +211,8 @@ class ValidatorAgent(BaseToolAgent):
                 error_report["ph_error"] = ph_error
             if bracket_error:
                 error_report["bracket_error"] = bracket_error
+            if omissions:
+                error_report["coverage_error"] = "正文疑似漏译，请翻译以下原文段落：" + "；".join(omissions[:3])
 
         return error_report
 
@@ -514,7 +521,7 @@ class ValidatorAgent(BaseToolAgent):
         return re.findall(r"<PLACEHOLDER_[^>]+>", content or "")
 
     def _extract_parts_need_validate(self, secs, caps, envs):
-        secs_need_val = [sec for sec in secs if sec["section"] != 0]
+        secs_need_val = [sec for sec in secs if str(sec["section"]) != "-1"]
         caps_need_val = caps
         if envs:
             if "need_trans" in envs[0]:

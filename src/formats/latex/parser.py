@@ -115,7 +115,7 @@ class LatexParser:
             process_text = f"Processing chapter：{i+1}/{total_sections}"
             process_bar.progress(80 + int(15 * (i/total_sections)), text=process_text)
 
-            if section["section"] == "0" or section["section"] == "-1":
+            if section["section"] == "-1":
                 section_content = self._extract_captions(section["content"])
                 self.sections_json[i]["trans_content"] = self._extract_envs(section_content)
                 self.sections_json[i]["content"] = self.sections_json[i]["trans_content"]
@@ -190,6 +190,9 @@ class LatexParser:
 
             input_tex = read_tex_file(inputfilepath)
             input_tex = self._freeze_opaque_content(remove_comments(input_tex))
+            if input_tex.endswith('%'):
+                # 文件结束也会终止行注释，合并后不能让它吞掉结束标记。
+                input_tex += '\n'
             input_tex = input_begin + input_tex + input_end
             main_tex = main_tex[:begin] + input_tex + main_tex[end:]
             self.inputs_json.append({
@@ -235,7 +238,6 @@ class LatexParser:
                              'equation', 'align', 'align*', 'gather', 'gather*', 'verbatim', 'verbatim*', 'lstlisting*', 'minted', 'minted*',
                              'equation*', 'alignat', 'alignat*', 'flalign', 'flalign*', 'split', 'split*', 'cases', 'cases*', 'subequations', 
                              'figure', 'figure*', 'wrapfigure', 'SCfigure', 'tikzpicture', 'CJK', 'scope',
-                             'tabularx', 'tabulary', 'longtable*', 'sidewaystable', 'table', 'table*', 'tabular', 'tabular*', 'longtable',
                              'multline', 'multline*', 'lstlisting', 'tcolorbox', 'thebibliography', 'bibliography', 'bibitem',
                              'algorithm', 'algorithmic', 'algorithmicx', 'algorithm2e', 'algorithmicx*', 'algorithmic*', 'algorithm*'
                              ]
@@ -317,7 +319,11 @@ class LatexParser:
             if env_name in no_translate_envs or env_name in LATEX_OPAQUE_ENVIRONMENTS:
                 need_trans = False
 
-            if placeholders_cap_in_env and env_name not in LATEX_PROSE_ENVIRONMENTS:
+            text_containers = {
+                'table', 'table*', 'sidewaystable', 'tabular', 'tabular*',
+                'tabularx', 'tabulary', 'longtable', 'longtable*',
+            }
+            if placeholders_cap_in_env and env_name not in LATEX_PROSE_ENVIRONMENTS | text_containers:
                 # If there are placeholders in the environment, we do not translate it.
                 need_trans = False
 
@@ -334,7 +340,8 @@ class LatexParser:
                 "env_name": env_name,
                 "content": env_content,
                 "trans_content": '',
-                "need_trans": need_trans
+                "need_trans": need_trans,
+                "always_trans": env_name in text_containers,
             })
 
         # 从后往前替换，避免前面的 placeholder 改变后续 span 的位置。
@@ -477,7 +484,7 @@ class LatexParser:
         self.sections_json.append({
             "section": "0",
             "content": before_section,
-            "trans_content": before_section
+            "trans_content": ''
         })
 
         last_pos = 0

@@ -8,6 +8,8 @@ import shutil
 from src.utils.progress import st
 from src.utils.usage import UsageTracker
 from src.utils.paths import project_path
+from src.utils.checkpoint import atomic_write_json
+from src.formats.latex.layout import inspect_layout_log
 import time
 
 base_dir = os.getcwd()
@@ -128,6 +130,16 @@ class GeneratorAgent(BaseToolAgent):
                 f"译文 PDF 仍缺少 {len(missing_glyphs)} 种 CJK 字符，请检查字体配置。",
                 level="warning",
             )
+        if pdf:
+            layout_report = inspect_layout_log(Path(pdf).with_suffix(".log"))
+            if self.output_dir:
+                atomic_write_json(Path(self.output_dir) / "layout_report.json", layout_report)
+            if layout_report["warnings"]:
+                self.log(
+                    f"PDF 已编译，但仍有 {len(layout_report['warnings'])} 处排版警告，"
+                    "请检查 layout_report.json 及对应页面。",
+                    level="warning",
+                )
         return pdf
 
     def usage_summary(self) -> Dict[str, Any]:

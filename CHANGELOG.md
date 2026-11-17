@@ -5,6 +5,9 @@ Upstream releases remain available at [NiuTrans/LaTeXTrans](https://github.com/N
 
 ## Unreleased
 
+- Translate prose before the first section heading (including footnotes) and text inside captioned tables. Detect unchanged long English passages in Chinese/Japanese translations. Reparse older checkpoints while retaining compatible translated fragments.
+- Preserve TeX comment line endings, preventing added whitespace from breaking tightly packed card grids and macros. Reflow wrapping figures using measured image/caption height and adapt the contour-based `fancyul` implementation to break Chinese underlined text across lines.
+- Write severe overflow and wrapping warnings to `layout_report.json` and report them even when PDF compilation succeeds.
 - Fix XeLaTeX failures when local templates load Type1 fonts after the CJK preamble (e.g. arXiv 2611.07071, `Cannot use XeTeXglyph with ptmr8c`). Restrict microtype protrusion to Unicode font encodings while keeping native-font protrusion available. Resume regenerates PDFs using saved translations.
 - Preserve nested command braces when translated title/caption text moves before a final command such as `\texorpdfstring`; legitimate closing delimiters are no longer removed as supposed model echoes, avoiding unnecessary translation retries.
 - Classify XeTeX font incompatibilities as environment errors instead of requesting model edits to body text. Skip redundant latexmk reruns for diagnosed engine errors, report the primary error concisely, and fall back to latexmk when direct compilation has not converged.

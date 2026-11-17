@@ -40,7 +40,7 @@ class ParserAgent(BaseToolAgent):
         env_need_trans = []
         if latex_parser.envs_json:
             for env in latex_parser.envs_json:
-                if env["need_trans"] and env["env_name"] not in LATEX_PROSE_ENVIRONMENTS:
+                if env["need_trans"] and not env.get("always_trans") and env["env_name"] not in LATEX_PROSE_ENVIRONMENTS:
                     env_need_trans.append(env)
 
         # need_trans 的 LLM 判定改由 TranslatorAgent 与章节翻译并发执行，

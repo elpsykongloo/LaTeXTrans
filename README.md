@@ -211,6 +211,8 @@ Chinese/Japanese output automatically adapts common legacy text fonts and
 templates. Existing native font selections are preserved. CJK punctuation in
 math is supported; detected missing Chinese glyphs trigger a font fallback using
 available static fonts. These compatibility changes do not require LLM requests.
+Prose before the first section, footnotes, and text inside captioned tables are translated as well. Long unchanged English passages in Chinese/Japanese output trigger an omission check; code, formulas, short terms, and text embedded in images are excluded. Parser updates retain compatible translated fragments while reparsing the source. Generation preserves TeX comment spacing and reserves the measured height of wrapping figures. Translated text can change pagination, and PDF layout should still be reviewed after automated checks pass.
+Severe overflow and wrapping warnings are saved in `layout_report.json` and reported separately from successful compilation.
 When compilation rules change, resume rebuilds the PDF from saved translations.
 
 Validation accepts equivalent standalone prose symbols, such as `\(\sim\)` and

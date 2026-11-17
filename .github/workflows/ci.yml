@@ -111,4 +111,4 @@ jobs:
       - name: Install package and tests
         run: python -m pip install -e ".[dev]"
       - name: Real compilation and repair tests with mocked model responses
-        run: python -m pytest tests/test_compile_repair.py tests/test_cli_and_xelatex_regressions.py tests/test_cjk_glyph_fallback.py -q -k "not failed_fallback_restores_original_source_byte_for_byte"
+        run: python -m pytest tests/test_compile_repair.py tests/test_cli_and_xelatex_regressions.py tests/test_cjk_glyph_fallback.py tests/test_translation_coverage_layout.py -q -k "not failed_fallback_restores_original_source_byte_for_byte"

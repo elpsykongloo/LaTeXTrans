@@ -11,6 +11,7 @@ from src.utils.paths import project_path
 
 
 CHECKPOINT_VERSION = 1
+PARSE_CHECKS_VERSION = "body-tables-comment-spacing-1"
 MAP_FILES = (
     "sections_map.json", "captions_map.json", "envs_map.json",
     "newcommands_map.json", "inputs_map.json",
@@ -130,7 +131,7 @@ def build_metadata(project_dir: str, config: Dict[str, Any], previous: Optional[
     return {"project_dir": str(project), "sources": sources, "translation": translation, "term_files": terms}
 
 
-COMPILE_CHECKS_VERSION = "xetex-font-compatibility-5"
+COMPILE_CHECKS_VERSION = "translated-layout-7"
 
 
 def compile_metadata(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -171,6 +172,7 @@ class CheckpointStore:
         )
         self.data = old if self.valid else {
             "version": CHECKPOINT_VERSION, "run_id": uuid.uuid4().hex,
+            "parse_checks": PARSE_CHECKS_VERSION,
             "metadata": self.metadata, "stages": {}, "stage": "parse", "status": "pending",
         }
         run_id = str(self.data.get("run_id", ""))
@@ -200,6 +202,10 @@ class CheckpointStore:
         self.save()
 
     def stage_completed(self, stage: str, snapshot=False) -> None:
+        if stage == "parse":
+            self.data["parse_checks"] = PARSE_CHECKS_VERSION
+            for later in ("translate", "validate", "compile"):
+                self.data.setdefault("stages", {})[later] = "pending"
         if snapshot:
             for filename in MAP_FILES:
                 value = read_json(self._safe_path(self.output_dir / filename))
@@ -214,7 +220,7 @@ class CheckpointStore:
 
     def completed_result(self) -> Optional[Dict[str, Any]]:
         outcome = self.data.get("outcome") or {}
-        if not self.valid or not self.is_complete("compile") or self.data.get("compile_settings") != self.compile_settings:
+        if not self.valid or self.needs_reparse or not self.is_complete("compile") or self.data.get("compile_settings") != self.compile_settings:
             return None
         pdf = outcome.get("pdf_path")
         if outcome.get("status") != "success" or not isinstance(pdf, (str, os.PathLike)) or not pdf:
@@ -238,7 +244,7 @@ class CheckpointStore:
         self.save()
 
     def restore_maps(self) -> bool:
-        if not self.valid:
+        if not self.valid or self.needs_reparse:
             return False
         for stage in ("validate", "translate", "parse"):
             if not self.is_complete(stage):
@@ -271,6 +277,57 @@ class CheckpointStore:
             return True
         return False
 
+    @property
+    def needs_reparse(self) -> bool:
+        return self.data.get("parse_checks") != PARSE_CHECKS_VERSION
+
+    def reusable_translation_maps(self) -> Dict[str, list]:
+        """Keep valid translations available when parser rules change."""
+        if not self.valid:
+            return {}
+        for stage in ("validate", "translate", "parse"):
+            if not self.is_complete(stage):
+                continue
+            maps = {kind: read_json(self._safe_path(self.run_dir / stage / filename), [])
+                    for kind, filename in MAP_KINDS.items()}
+            if not all(isinstance(items, list) for items in maps.values()):
+                continue
+            for kind, items in maps.items():
+                for index, item in enumerate(items):
+                    if isinstance(item, dict):
+                        items[index] = self.read_fragment(kind, index, item) or item
+            return maps
+        return {}
+
+    def reuse_after_parse(self, previous: Dict[str, list]) -> int:
+        """Match unchanged translation units, never transplant an old parse tree.
+
+        New placeholder identifiers must also match: translations can reference
+        nested captions/environments. Source and translation flags are kept from
+        the new parser so newly translatable tables cannot be silently skipped.
+        """
+        reused = 0
+        for kind, filename in MAP_KINDS.items():
+            items = read_json(self._safe_path(self.output_dir / filename), [])
+            identifier = "section" if kind == "sec" else "placeholder"
+            for index, item in enumerate(items):
+                old = next((record for record in previous.get(kind, [])
+                            if isinstance(record, dict)
+                            and record.get(identifier) == item.get(identifier)
+                            and record.get("content") == item.get("content")
+                            and record.get("need_trans") == item.get("need_trans")
+                            and record.get("trans_content")), None)
+                if old is None or (kind == "sec" and str(item.get(identifier)) in {"-1", "0"}):
+                    self.drop_fragment(kind, index)
+                    continue
+                item["trans_content"] = old["trans_content"]
+                if old.get("need_trans_pending") is None:
+                    item.pop("need_trans_pending", None)
+                self.save_fragment(kind, index, item)
+                reused += 1
+            atomic_write_json(self._safe_path(self.output_dir / filename), items)
+        return reused
+
     def _fragment_path(self, kind: str, index: int) -> Path:
         if kind not in MAP_KINDS or index < 0:
             raise ValueError("Invalid translation fragment location.")
@@ -282,6 +339,10 @@ class CheckpointStore:
         if not isinstance(value, dict) or value.get(identifier) != item.get(identifier):
             return None
         if not isinstance(value.get("trans_content"), str) or not isinstance(value.get("content"), str):
+            return None
+        if "content" in item and value.get("content") != item.get("content"):
+            return None
+        if "need_trans" in item and value.get("need_trans") != item.get("need_trans") and not item.get("need_trans_pending"):
             return None
         return value
 
