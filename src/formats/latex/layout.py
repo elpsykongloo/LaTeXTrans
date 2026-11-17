@@ -3,7 +3,89 @@
 import re
 from pathlib import Path
 
-from .utils import get_command_pattern, get_latex_macro_definitions, get_latex_opaque_fragments
+from .utils import _find_balanced_group_end, get_command_pattern, get_latex_environment_tokens, get_latex_macro_definitions, get_latex_opaque_fragments
+
+
+def suppress_build_date(tex: str) -> str:
+    """Do not present today's rebuild date as the translated paper's date.
+
+    Only the standard dynamic date is suppressed. Explicit dates and custom
+    class date formats are retained; no publication date is guessed.
+    """
+    marker = "% LaTeXTrans: suppress dynamic rebuild date"
+    if marker in tex or not re.search(r"\\maketitle\b", tex):
+        return tex
+    support = "\n".join([
+        marker,
+        r"\makeatletter",
+        r"\AtBeginDocument{%",
+        r"  \def\latextransdynamicdate{\today}%",
+        r"  \ifx\@date\latextransdynamicdate\date{}\fi}",
+        r"\makeatother",
+    ])
+    return re.sub(r"\\begin\s*\{document\}", lambda match: support + "\n" + match.group(0), tex, count=1)
+
+
+def fit_floating_tables(tex: str) -> str:
+    """Bound ordinary float tables to their current column width, never enlarge.
+
+    Author tabulars, longtables and tabularx retain their own layout. Only the
+    outermost tabular is boxed so nested cell tabulars cannot reuse the savebox.
+    """
+    cleaned, tokens = get_latex_environment_tokens(tex)
+    protected = [(start, end) for start, end, _ in get_latex_macro_definitions(cleaned)]
+    protected.extend((start, end) for start, end, _ in get_latex_opaque_fragments(cleaned))
+    # Existing sizing wrappers own the dimensions and grouping of their content.
+    # Boxing their tabular again can interfere with graphicx's saved box state.
+    for command in re.finditer(r"\\(resizebox|scalebox|adjustbox)\*?(?![A-Za-z])", cleaned):
+        index, groups = command.end(), 0
+        required = 3 if command[1] == "resizebox" else 2
+        while groups < required:
+            whitespace = re.match(r"(?:\s|%[^\n]*(?:\n|$))*", cleaned[index:])
+            index += whitespace.end()
+            if index >= len(cleaned) or cleaned[index] not in "[{":
+                break
+            opening = cleaned[index]
+            end = _find_balanced_group_end(cleaned, index, opening, "]" if opening == "[" else "}")
+            if end is None:
+                break
+            groups += opening == "{"
+            index = end
+        if groups == required:
+            protected.append((command.start(), index))
+    stack, spans = [], []
+    for token in tokens:
+        if any(start <= token.start() < end for start, end in protected):
+            continue
+        name = token.group("name")
+        if token.group("kind") == "begin":
+            ancestors = {entry[0] for entry in stack}
+            selected = (name in {"tabular", "tabular*"} and bool(ancestors & {"table", "table*"})
+                        and not ancestors & {"tabular", "tabular*", "latextranstable", "adjustbox"})
+            stack.append((name, token.start(), selected))
+        elif stack and stack[-1][0] == name:
+            _, start, selected = stack.pop()
+            if selected:
+                spans.append((start, token.end()))
+    if not spans:
+        return tex
+    for start, end in reversed(sorted(spans)):
+        cleaned = cleaned[:start] + r"\begin{latextranstable}" + cleaned[start:end] + r"\end{latextranstable}" + cleaned[end:]
+    support = "\n".join([
+        "% LaTeXTrans: fit floating tables to the available column",
+        r"\usepackage{graphicx}",
+        r"\newsavebox{\latextranstablebox}",
+        r"\newenvironment{latextranstable}{%",
+        r"  \edef\latextranstablewidth{\the\linewidth}%",
+        r"  \begin{lrbox}{\latextranstablebox}%",
+        r"}{%",
+        r"  \end{lrbox}%",
+        r"  \ifdim\wd\latextranstablebox>\latextranstablewidth\relax",
+        r"    \typeout{LaTeXTrans: scaled table from \the\wd\latextranstablebox\space to \latextranstablewidth}%",
+        r"    \resizebox{\latextranstablewidth}{!}{\usebox{\latextranstablebox}}%",
+        r"  \else\usebox{\latextranstablebox}\fi}",
+    ])
+    return re.sub(r"\\begin\s*\{document\}", lambda match: support + "\n" + match.group(0), cleaned, count=1)
 
 
 def reflow_wrapping_floats(tex: str) -> str:
@@ -83,7 +165,7 @@ def add_cjk_layout_support(tex: str) -> str:
         ])
         environments = set(re.findall(r"\\begin\s*\{([A-Za-z]+)\}", tex))
         for env in sorted(environments):
-            if env.lower().endswith("box") or env in {"mdframed", "itemize", "enumerate", "description"}:
+            if (env.lower().endswith("box") and env != "lrbox") or env in {"mdframed", "itemize", "enumerate", "description"}:
                 lines.append(r"\AddToHook{env/" + env + r"/before}{\latextransfinishwrap}")
     if re.search(r"\\fancyul(?:\[|\{|\s)", tex):
         lines.extend([
@@ -112,4 +194,5 @@ def inspect_layout_log(log_path) -> dict:
         if float(match.group(1)) >= 10:
             warnings.append(match.group(0).strip())
     warnings.extend(match.group(0).strip() for match in re.finditer(r"Package wrapfig Warning:[^\n]+", log))
-    return {"status": "warnings" if warnings else "no_warnings", "log_path": str(path), "warnings": warnings}
+    adjustments = re.findall(r"LaTeXTrans: scaled table[^\n]+", log)
+    return {"status": "warnings" if warnings else "no_warnings", "log_path": str(path), "warnings": warnings, "adjustments": adjustments}

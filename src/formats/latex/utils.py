@@ -1951,6 +1951,79 @@ def _insert_after_documentclass(latex_code: str, package_block: str) -> str:
     return latex_code[:position] + "\n" + package_block + "\n" + latex_code[position:]
 
 
+def normalize_xetex_graphics_dimensions(latex_code: str) -> str:
+    """Express pdfTeX pixel dimensions via its configurable pixel length.
+
+    XeTeX has no px unit. Limit adaptation to image size options so prose,
+    paths and code examples containing px are never rewritten.
+    """
+    if get_latex_opaque_fragments(latex_code):
+        return _transform_preserving_opaque_content(latex_code, normalize_xetex_graphics_dimensions)
+    pattern = re.compile(r"\\includegraphics\*?\s*\[(?P<options>[^\[\]]*)\]")
+    changed = False
+
+    def replace(match):
+        nonlocal changed
+        line_start = latex_code.rfind("\n", 0, match.start()) + 1
+        if _latex_comment_start(latex_code[line_start:match.start()]) is not None:
+            return match.group(0)
+        options = re.sub(
+            r"(?P<prefix>(?:^|,)\s*(?:width|height|totalheight)\s*=\s*\{?\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*)px\b",
+            lambda size: size.group("prefix") + r"\pdfpxdimen", match.group("options"),
+        )
+        changed |= options != match.group("options")
+        return match.group(0)[:match.start("options") - match.start()] + options + "]"
+
+    result = pattern.sub(replace, latex_code)
+    if changed:
+        # pdfTeX's historical default is 1.00001bp; later assignments such as
+        # \pdfpxdimen=1in \divide\pdfpxdimen by 96 continue to work.
+        result = (r"\ifdefined\pdfpxdimen\else\newdimen\pdfpxdimen\pdfpxdimen=1.00001bp\fi" + "\n" + result)
+    return result
+
+
+def normalize_xetex_driver_options(latex_code: str) -> str:
+    """Let graphics packages detect XeTeX instead of forcing a source driver.
+
+    Retain other package options, including nested option values. Mixed package
+    lists are split so unrelated packages keep their original options.
+    """
+    masked = mask_latex_opaque_content(latex_code)
+    lines = []
+    for line in masked.splitlines(keepends=True):
+        start = _latex_comment_start(line)
+        lines.append(line if start is None else line[:start] + re.sub(r"[^\r\n]", " ", line[start:]))
+    masked = "".join(lines)
+    packages = {"graphicx", "graphics", "color", "xcolor", "hyperref", "geometry"}
+    drivers = {"pdftex", "dvips", "dvipdfm", "dvipdfmx", "luatex", "vtex"}
+    pattern = re.compile(
+        r"\\(?P<command>usepackage|RequirePackage)\s*\[(?P<options>[^\[\]]*)\]\s*\{(?P<packages>[^{}]+)\}"
+        r"|\\(?P<pass>PassOptionsToPackage)\s*\{(?P<pass_options>[^{}]*)\}\s*\{(?P<pass_packages>[^{}]+)\}"
+    )
+    for match in reversed(list(pattern.finditer(masked))):
+        options = match.group("options") if match.group("command") else match.group("pass_options")
+        names = (match.group("packages") or match.group("pass_packages")).split(",")
+        # Commas inside {...} belong to option values, not separate options.
+        parts, start, depth = [], 0, 0
+        for index, char in enumerate(options + ","):
+            depth += (char == "{") - (char == "}")
+            if char == "," and depth == 0:
+                parts.append(options[start:index])
+                start = index + 1
+        kept = [part for part in parts if part.strip() not in drivers]
+        if len(kept) == len(parts) or not any(name.strip() in packages for name in names):
+            continue
+        replacements = []
+        for name in names:
+            selected = ",".join(kept) if name.strip() in packages else options
+            if match.group("command"):
+                replacements.append("\\" + match.group("command") + ("[" + selected + "]" if selected.strip() else "") + "{" + name.strip() + "}")
+            else:
+                replacements.append(r"\PassOptionsToPackage{" + selected + "}{" + name.strip() + "}")
+        latex_code = latex_code[:match.start()] + "\n".join(replacements) + latex_code[match.end():]
+    return latex_code
+
+
 def _remove_pdfoutput_directives(latex_code: str) -> str:
     """移除 XeTeX/LuaTeX 不支持的活动 ``\\pdfoutput`` 赋值。"""
     # ``\\pdfoutput`` 是 pdfTeX 原语，arXiv 源码经常用
@@ -2128,6 +2201,24 @@ def _xelatex_native_font_lines() -> List[str]:
     return lines
 
 
+def _upgrade_legacy_documentstyle(latex_code: str) -> str:
+    """Migrate standard LaTeX 2.09 classes so Unicode packages can load."""
+    pattern = re.compile(r"(?m)^[ \t]*\\documentstyle\s*(?:\[(?P<options>[^\]]*)\])?\s*\{(?P<class>article|report|book|letter)\}")
+    match = pattern.search(latex_code)
+    if not match:
+        return latex_code
+    class_options = {"10pt", "11pt", "12pt", "a4paper", "a5paper", "b5paper", "letterpaper", "legalpaper", "executivepaper",
+                     "landscape", "oneside", "twoside", "onecolumn", "twocolumn", "draft", "final", "titlepage", "notitlepage",
+                     "openright", "openany", "leqno", "fleqn", "openbib"}
+    options = [item.strip() for item in (match.group("options") or "").split(",") if item.strip()]
+    selected = [item for item in options if item in class_options]
+    packages = [item for item in options if item not in class_options]
+    replacement = r"\documentclass" + ("[" + ",".join(selected) + "]" if selected else "") + "{" + match.group("class") + "}"
+    if packages:
+        replacement += "\n" + r"\usepackage{" + ",".join(packages) + "}"
+    return latex_code[:match.start()] + replacement + latex_code[match.end():]
+
+
 def _add_xecjk_support(latex_code: str, cjk_font_lines: Optional[List[str]] = None) -> str:
     """中文与日文共用的 XeLaTeX + xeCJK 导言区处理；cjk_font_lines 为额外的 CJK 字体设置。"""
     if get_latex_opaque_fragments(latex_code):
@@ -2136,7 +2227,9 @@ def _add_xecjk_support(latex_code: str, cjk_font_lines: Optional[List[str]] = No
         )
     # 中文输出统一使用 Unicode 引擎，因此先清理原稿中只属于 pdfTeX
     # 的输出模式声明；这一步必须位于所有提前返回分支之前。
-    latex_code = _remove_pdfoutput_directives(latex_code)
+    latex_code = _upgrade_legacy_documentstyle(latex_code)
+    latex_code = normalize_xetex_driver_options(_remove_pdfoutput_directives(latex_code))
+    latex_code = normalize_xetex_graphics_dimensions(latex_code)
 
     documentclass = _documentclass_name(latex_code)
     is_acmart = any(name.strip().lower() == "acmart" for name in documentclass.split(","))
@@ -2286,7 +2379,7 @@ _XETEX_UNSUPPORTED_LIGATURE_LINE = re.compile(
 
 
 def patch_xelatex_compatibility_files(project_dir: str) -> List[str]:
-    """Disable pdfTeX-only ligature directives in local class/style files.
+    """Adapt engine-specific ligature and driver options in local style files.
 
     Some arXiv templates put ``\\DisableLigatures`` in a ``.cls`` file.  The
     command is accepted by pdfTeX but microtype raises a fatal error when the
@@ -2329,6 +2422,8 @@ def patch_xelatex_compatibility_files(project_dir: str) -> List[str]:
             replace_directive,
             original,
         )
+        patched = normalize_xetex_driver_options(patched)
+        patched = normalize_xetex_graphics_dimensions(patched)
         if patched == original:
             continue
 
@@ -2641,12 +2736,18 @@ def get_tex_url(arxiv_id: str, headers: dict) -> str:
         return f"https://arxiv.org{link['href']}"
     return ""
 
+def arxiv_project_name(arxiv_id: str) -> str:
+    """Use one local directory component for modern and legacy arXiv IDs."""
+    return arxiv_id.replace("/", "_")
+
+
 def is_already_downloaded(arxiv_id: str, save_dir: str) -> bool:
     """
     检查 TeX 源码是否已经完整下载或完整解压。
     """
-    tar_path = os.path.join(save_dir, f"{arxiv_id}.tar.gz")
-    extracted_dir = os.path.join(save_dir, arxiv_id)
+    local_name = arxiv_project_name(arxiv_id)
+    tar_path = os.path.join(save_dir, f"{local_name}.tar.gz")
+    extracted_dir = os.path.join(save_dir, local_name)
     invalid_archive_removed = False
 
     if os.path.exists(tar_path):
@@ -2731,12 +2832,17 @@ def download_file_ranged(url: str, target_path: str, headers: dict, on_progress=
     return total
 
 
+class ArxivSourceUnavailableError(RuntimeError):
+    """The arXiv source endpoint supplied a PDF instead of TeX sources."""
+
+
 def download_tex(arxiv_id: str, tex_url: str, save_dir: str, headers: dict):
     """
     下载 TeX 源码 .tar.gz 文件
     """
     os.makedirs(save_dir, exist_ok=True)
-    file_path = os.path.join(save_dir, f"{arxiv_id}.tar.gz")
+    local_name = arxiv_project_name(arxiv_id)
+    file_path = os.path.join(save_dir, f"{local_name}.tar.gz")
     temp_file_path = f"{file_path}.download"
 
     if os.path.exists(temp_file_path):
@@ -2760,6 +2866,17 @@ def download_tex(arxiv_id: str, tex_url: str, save_dir: str, headers: dict):
 
         download_file_ranged(tex_url, temp_file_path, headers, on_progress=report)
 
+        # Identify the response format; a PDF-only submission is not a corrupt
+        # source archive and retrying its download cannot provide TeX sources.
+        with open(temp_file_path, "rb") as response_file:
+            is_pdf = response_file.read(5) == b"%PDF-"
+        if is_pdf:
+            os.remove(temp_file_path)
+            raise ArxivSourceUnavailableError(
+                f"arXiv {arxiv_id} 仅提供 PDF，没有可用的 TeX 源码。"
+                "当前流程需要 TeX 源码；请使用提供源码的论文版本，或传入本地 TeX 项目。"
+            )
+
         if not _is_complete_archive(temp_file_path):
             raise IOError(f"Downloaded archive is incomplete or unreadable: {temp_file_path}")
 
@@ -2767,7 +2884,7 @@ def download_tex(arxiv_id: str, tex_url: str, save_dir: str, headers: dict):
 
         st.success(f"[SUCCESS] {arxiv_id} successfully downloaded to {file_path}.")
 
-        return os.path.join(save_dir, f"{arxiv_id}")
+        return os.path.join(save_dir, local_name)
 
     except (requests.RequestException, OSError) as e:
         if os.path.exists(temp_file_path):
@@ -2792,8 +2909,9 @@ def download_arxiv_source(arxiv_id: str, save_dir: str) -> Optional[str]:
     失败时再按旧方式从 abs 页面解析下载链接。
     """
     os.makedirs(save_dir, exist_ok=True)
-    project_dir = os.path.join(save_dir, arxiv_id)
-    tar_path = os.path.join(save_dir, f"{arxiv_id}.tar.gz")
+    local_name = arxiv_project_name(arxiv_id)
+    project_dir = os.path.join(save_dir, local_name)
+    tar_path = os.path.join(save_dir, f"{local_name}.tar.gz")
 
     if is_already_downloaded(arxiv_id, save_dir):
         print(f"[SKIP] Already downloaded: {arxiv_id}")
@@ -2821,12 +2939,13 @@ def download_arxiv_pdf(arxiv_id: str, save_dir: str) -> Optional[str]:
     放在源码目录外，避免与源码解压、目录复制并发时互相干扰；
     由调用方在合适的时机移动到最终位置。
     """
-    final_path = os.path.join(save_dir, arxiv_id, f"{arxiv_id}.pdf")
+    local_name = arxiv_project_name(arxiv_id)
+    final_path = os.path.join(save_dir, local_name, f"{local_name}.pdf")
     if os.path.isfile(final_path) and os.path.getsize(final_path) > 0:
         return final_path
 
     os.makedirs(save_dir, exist_ok=True)
-    temp_path = os.path.join(save_dir, f".{arxiv_id}.pdf.download")
+    temp_path = os.path.join(save_dir, f".{local_name}.pdf.download")
     try:
         download_file_ranged(f"https://arxiv.org/pdf/{arxiv_id}.pdf", temp_path, ARXIV_HEADERS)
         print(f"[SUCCESS] Downloaded PDF for {arxiv_id}")
@@ -2843,7 +2962,7 @@ def place_arxiv_pdf(pdf_path: Optional[str], arxiv_id: str, target_dirs: List[st
     if not pdf_path or not os.path.isfile(pdf_path):
         return
     for target_dir in target_dirs:
-        target = os.path.join(target_dir, f"{arxiv_id}.pdf")
+        target = os.path.join(target_dir, f"{arxiv_project_name(arxiv_id)}.pdf")
         if os.path.isdir(target_dir) and not os.path.isfile(target):
             shutil.copyfile(pdf_path, target)
     if pdf_path.endswith(".pdf.download"):
@@ -2861,7 +2980,13 @@ def batch_download_arxiv_tex(arxiv_ids: List[str], save_dir: str = "./tex_source
     with ThreadPoolExecutor(max_workers=min(16, 2 * len(arxiv_ids))) as pool:
         source_futures = [pool.submit(download_arxiv_source, arxiv_id, save_dir) for arxiv_id in arxiv_ids]
         pdf_futures = [pool.submit(download_arxiv_pdf, arxiv_id, save_dir) for arxiv_id in arxiv_ids]
-        source_dirs = [future.result() for future in source_futures]
+        source_dirs = []
+        for future in source_futures:
+            try:
+                source_dirs.append(future.result())
+            except ArxivSourceUnavailableError as exc:
+                print(f"[SKIP] {exc}")
+                source_dirs.append(None)
         for arxiv_id, source_dir, pdf_future in zip(arxiv_ids, source_dirs, pdf_futures):
             if source_dir:
                 place_arxiv_pdf(pdf_future.result(), arxiv_id, [source_dir])
@@ -2879,11 +3004,11 @@ def fetch_arxiv_categories(arxiv_id: str) -> List[str]:
 
         subjects_div = soup.find("div", class_="subjects")
         if subjects_div:
-            categories.extend(re.findall(r"\(([a-z]+\.[A-Z]+)\)", subjects_div.text))
+            categories.extend(re.findall(r"\(([a-z][a-z-]*(?:\.[A-Za-z-]+)?)\)", subjects_div.text))
         else:
             td_subjects = soup.find("td", class_="tablecell subjects")
             if td_subjects:
-                categories.extend(re.findall(r'\(([a-z]+\.[A-Z]+)\)', td_subjects.text))
+                categories.extend(re.findall(r'\(([a-z][a-z-]*(?:\.[A-Za-z-]+)?)\)', td_subjects.text))
 
         if not categories:
             print(f"[WARNING] No categories found for {arxiv_id}")

@@ -4,7 +4,7 @@ import re
 from collections import Counter
 from .utils import *
 from .utils import _find_balanced_group_end
-from .layout import add_cjk_layout_support, reflow_wrapping_floats
+from .layout import add_cjk_layout_support, fit_floating_tables, reflow_wrapping_floats, suppress_build_date
 
 
 def _strip_md_wrap(text: str) -> str:
@@ -306,6 +306,8 @@ class LatexConstructor:
         # 翻译模型可能在 \ref/\cref/\cite 等不可翻译参数中转义下划线。
         # 在拆分包含文件前修复，使主文件和包含文件都得到处理。
         tex = normalize_latex_reference_arguments(tex)
+        tex = fit_floating_tables(tex)
+        tex = suppress_build_date(tex)
         if target_language_family(self.target_language) != "other":
             tex = reflow_wrapping_floats(tex)
             tex = add_cjk_layout_support(tex)

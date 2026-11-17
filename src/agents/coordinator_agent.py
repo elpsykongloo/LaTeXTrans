@@ -221,7 +221,7 @@ class CoordinatorAgent:
 
         checkpoint.begin("compile")
         # 生成会覆盖上次的译文 PDF，必须先判断上次的下载目录副本是否未被改动。
-        previous_copy = self._unmodified_downloads_copy(checkpoint.previous_outcome)
+        previous_copy = self._unmodified_downloads_copy(checkpoint.previous_outcome) if self.copy_to_downloads else None
         generator_agent = GeneratorAgent(config=self.config,
                                          project_dir=self.project_dir,
                                          output_dir=transed_project_dir)

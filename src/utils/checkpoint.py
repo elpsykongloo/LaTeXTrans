@@ -131,7 +131,7 @@ def build_metadata(project_dir: str, config: Dict[str, Any], previous: Optional[
     return {"project_dir": str(project), "sources": sources, "translation": translation, "term_files": terms}
 
 
-COMPILE_CHECKS_VERSION = "translated-layout-7"
+COMPILE_CHECKS_VERSION = "translated-layout-14"
 
 
 def compile_metadata(config: Dict[str, Any]) -> Dict[str, Any]:

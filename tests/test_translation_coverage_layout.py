@@ -63,6 +63,17 @@ def test_coverage_ignores_code_math_and_short_names():
     assert untranslated_prose(ENGLISH, ENGLISH, "en", "en") == []
 
 
+def test_short_untranslated_footnote_in_translated_paragraph_is_rejected():
+    note = r"\footnote{Fine-tuning code and pre-trained models are available at \url{https://example.org/model}}"
+    assert untranslated_prose("Model description." + note, "模型描述。" + note, "en", "ch")
+    translated = r"模型描述。\footnote{微调代码和预训练模型见 \url{https://example.org/model}}"
+    assert untranslated_prose("Model description." + note, translated, "en", "ch") == []
+    code = r"\begin{verbatim}" + note + r"\end{verbatim}"
+    assert untranslated_prose(code, code, "en", "ch") == []
+    names = r"\footnote{Alexey Dosovitskiy Lucas Beyer Alexander Kolesnikov Dirk Weissenborn Xiaohua Zhai}"
+    assert untranslated_prose(names, names, "en", "ch") == []
+
+
 def test_layout_arguments_and_comment_line_endings_are_protected():
     text = remove_comments("\\begin{minipage}{.8\\linewidth}% explanation\n"
                            "\\begin{tcbraster}[raster columns=3]Title\\end{tcbraster}\\end{minipage}")

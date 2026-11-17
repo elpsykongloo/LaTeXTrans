@@ -20,6 +20,8 @@ from src.utils.paths import extract_tar, extract_zip
 from src.utils.checkpoint import CheckpointStore, file_metadata
 from src.formats.latex.bilingual import create_bilingual_pdf, ensure_original_pdf
 from src.formats.latex.utils import (
+    ArxivSourceUnavailableError,
+    arxiv_project_name,
     batch_download_arxiv_tex,
     download_arxiv_pdf,
     download_arxiv_source,
@@ -126,8 +128,9 @@ def extract_local_archive(archive_path: str, projects_dir: str) -> str:
 
 
 def split_cli_items(values: Sequence[str]) -> List[str]:
-    raw = " ".join(values)
-    return [item.strip() for item in raw.split(",") if item.strip()]
+    # argparse already preserves quoted paths containing spaces. Joining argv
+    # again merges separate arXiv IDs (or project paths) into one invalid input.
+    return [item.strip() for value in values for item in value.split(",") if item.strip()]
 
 
 def split_multivalue_text(value: str) -> List[str]:
@@ -309,12 +312,12 @@ def _add_bilingual_result(
     translated_pdf = outcome.get("pdf_path")
 
     def download_original():
-        arxiv_ids = extract_arxiv_ids([base_name])
+        arxiv_ids = extract_arxiv_ids([base_name.replace("_", "/")])
         if not allow_download or not arxiv_ids:
             return None
         downloaded = download_arxiv_pdf(arxiv_ids[0], str(Path(project_dir).parent))
         place_arxiv_pdf(downloaded, arxiv_ids[0], [project_dir, str(project_output / base_name)])
-        candidate = Path(project_dir) / f"{arxiv_ids[0]}.pdf"
+        candidate = Path(project_dir) / f"{arxiv_project_name(arxiv_ids[0])}.pdf"
         return str(candidate) if candidate.is_file() else None
 
     try:
@@ -564,18 +567,21 @@ def run_pipeline(
 
     target_language = config.get("target_language", "ch")
     fetch_categories = not config.get("user_term")
-    if fetch_categories:
-        config["category"] = dict(config.get("category") or {})
+    config["category"] = dict(config.get("category") or {})
     cached_papers = {}
     for arxiv_id in paper_list:
-        project = Path(projects_dir) / arxiv_id
+        local_name = arxiv_project_name(arxiv_id)
+        if arxiv_id in config["category"]:
+            config["category"].setdefault(local_name, config["category"][arxiv_id])
+        project = Path(projects_dir) / local_name
         if not project.is_dir():
             continue
-        cached = CheckpointStore(str(Path(output_dir) / f"{target_language}_{arxiv_id}"), str(project), config)
+        cached = CheckpointStore(str(Path(output_dir) / f"{target_language}_{local_name}"), str(project), config)
         if cached.valid:
             cached_papers[arxiv_id] = cached
             if fetch_categories:
                 config["category"].setdefault(arxiv_id, cached.metadata["translation"]["categories"])
+                config["category"].setdefault(local_name, cached.metadata["translation"]["categories"])
     all_reusable = all(
         arxiv_id in cached_papers and cached_papers[arxiv_id].completed_result() is not None
         for arxiv_id in paper_list
@@ -619,7 +625,7 @@ def run_pipeline(
         if llm_host and not all_reusable:
             io_pool.submit(dns_cache.prewarm, llm_host, llm_port)
         source_futures = {
-            (io_pool.submit(str, Path(projects_dir) / arxiv_id) if arxiv_id in cached_papers
+            (io_pool.submit(str, Path(projects_dir) / arxiv_project_name(arxiv_id)) if arxiv_id in cached_papers
              else io_pool.submit(download_arxiv_source, arxiv_id, projects_dir)): arxiv_id
             for arxiv_id in paper_list
         }
@@ -630,9 +636,15 @@ def run_pipeline(
         }
         # 带宽有限：原文 PDF 不在关键路径上，等全部源码下载完再开始。
         sources_done = threading.Event()
+        sources_by_id = {arxiv_id: future for future, arxiv_id in source_futures.items()}
 
         def download_pdf_after_sources(arxiv_id: str) -> Optional[str]:
             sources_done.wait()
+            try:
+                if not sources_by_id[arxiv_id].result():
+                    return None
+            except Exception:
+                return None
             return download_arxiv_pdf(arxiv_id, projects_dir)
 
         pdf_futures = {
@@ -654,7 +666,7 @@ def run_pipeline(
                     print(f"[WARNING] Failed to fetch categories for {arxiv_id}: {e}")
                     categories = []
                 config["category"][arxiv_id] = categories
-                project_config = dict(config, category={arxiv_id: categories})
+                project_config = dict(config, category={arxiv_project_name(arxiv_id): categories})
             try:
                 outcome = normalize_project_result(
                     CoordinatorAgent(
@@ -712,14 +724,19 @@ def run_pipeline(
                 for future in done:
                     if future in source_futures:
                         arxiv_id = source_futures[future]
+                        failure_status = "failed_download"
                         try:
                             project_dir = future.result()
                             download_error = "Source download returned no TeX project."
+                        except ArxivSourceUnavailableError as e:
+                            download_error = str(e)
+                            failure_status = "source_unavailable"
+                            project_dir = None
                         except Exception as e:
                             download_error = f"Source download failed for {arxiv_id}: {e}"
                             project_dir = None
                         if not project_dir:
-                            record_input_failure(str(Path(projects_dir) / arxiv_id), download_error, "failed_download")
+                            record_input_failure(str(Path(projects_dir) / arxiv_project_name(arxiv_id)), download_error, failure_status)
                         work_future = submit(project_dir, arxiv_id) if project_dir else None
                         if work_future is not None:
                             pending.add(work_future)

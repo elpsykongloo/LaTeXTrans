@@ -895,6 +895,11 @@ class TranslatorAgent(BaseToolAgent):
             return protection.protected_text
 
         instructions = ["[LaTeX 结构保护]"]
+        instructions.append(
+            "临时标记之外的自然语言都需要翻译，包括花括号内的脚注、强调文字、"
+            "图注和表头。不能仅因文字紧跟结构标记或位于花括号内就保留原文；"
+            "只保留命令语法、数学表达式、路径、链接、引用键以及姓名等专名。"
+        )
         if protection.token_order:
             instructions.append(
                 "输入中的 [[[LATEXTRANS_..._0001]]] 是临时结构标记，"
